@@ -14,14 +14,14 @@ A lightweight Linux desktop application for WhatsApp Web with multi-account supp
 ## Prerequisites
 
 - Go 1.21 or later
-- WebView2 runtime (Linux: webkit2gtk-4.1)
 - Wails v2 CLI (`go install github.com/wailsapp/wails/v2/cmd/wails@latest`)
+- **WebView2 dependencies** (Linux: webkit2gtk-4.1)
 
 ### Linux Dependencies
 
 ```bash
-# Ubuntu/Debian
-sudo apt update && sudo apt install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev
+# Ubuntu/Debian (22.04+ has webkit2gtk-4.1)
+sudo apt update && sudo apt install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev pkg-config
 
 # Fedora
 sudo dnf install webkit2gtk4.1-devel gtk3-devel libayatana-appindicator-gtk3-devel
@@ -29,6 +29,8 @@ sudo dnf install webkit2gtk4.1-devel gtk3-devel libayatana-appindicator-gtk3-dev
 # Arch
 sudo pacman -S webkit2gtk-4.1 gtk3 libayatana-appindicator
 ```
+
+> **Note**: Wails expects `webkit2gtk-4.0` but Ubuntu 22.04+ ships `webkit2gtk-4.1`. See [Building](#building-from-source) for workaround.
 
 ## Building from Source
 
@@ -40,26 +42,34 @@ cd Whatsweb
 # Install dependencies
 go mod tidy
 
-# Build for development
-wails dev
+# Option 1: Build with Wails (requires pkg-config workaround for webkit2gtk-4.1)
+# Create a pkgconfig symlink for webkit2gtk-4.0 -> webkit2gtk-4.1
+mkdir -p pkgconfig
+ln -sf /usr/lib/x86_64-linux-gnu/pkgconfig/webkit2gtk-4.1.pc pkgconfig/webkit2gtk-4.0.pc
 
-# Build for production
-wails build
+# Build with custom PKG_CONFIG_PATH
+PKG_CONFIG_PATH=./pkgconfig:$PKG_CONFIG_PATH ~/go/bin/wails build
+
+# Option 2: Direct Go build (faster, no packaging)
+go build -o Whatsweb .
+
+# Production binary will be in build/bin/Whatsweb
 ```
-
-The production binary will be in `build/bin/`.
 
 ## Running
 
 ### Development Mode
 ```bash
-wails dev
+PKG_CONFIG_PATH=./pkgconfig:$PKG_CONFIG_PATH ~/go/bin/wails dev
 ```
 
 ### Production
 ```bash
 # After building
 ./build/bin/Whatsweb
+
+# Or if built directly with go build
+./Whatsweb
 ```
 
 Or install system-wide:
@@ -97,11 +107,14 @@ Whatsweb/
 ├── main.go                 # Application entry point
 ├── go.mod                  # Go module definition
 ├── README.md               # This file
+├── wails.json              # Wails configuration
+├── .gitignore
 ├── frontend/
 │   └── dist/               # Frontend assets (HTML, CSS, JS)
 │       ├── index.html      # Main HTML
 │       ├── styles.css      # Styling (WhatsApp dark theme)
 │       └── app.js          # Frontend logic
+├── pkgconfig/              # pkg-config workaround (gitignored)
 └── src/
     ├── backend/
     │   └── app.go          # Backend logic (profile management)
@@ -147,8 +160,9 @@ systemctl --user enable --now whatsweb
 
 ## Troubleshooting
 
-### WebView not loading
-- Ensure webkit2gtk-4.1 is installed
+### WebView not loading / pkg-config errors
+- Ensure webkit2gtk-4.1 is installed: `apt install libwebkit2gtk-4.1-dev`
+- Create pkgconfig symlink (see Building section)
 - Try: `wails doctor` to check environment
 
 ### Encryption errors
@@ -156,6 +170,9 @@ systemctl --user enable --now whatsweb
 
 ### Multiple instances
 - Only one instance per user should run (profiles locked by encryption)
+
+### "Overriding existing handler for signal 10" warning
+- This is a normal WebKit/JSC warning, not an error. The app works correctly.
 
 ## License
 

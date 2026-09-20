@@ -27,3 +27,4 @@ Thumbs.db
 # Test outputs
 coverage.out
 frontend/wailsjs/
+pkgconfig/
