@@ -17,7 +17,6 @@ vendor/
 Thumbs.db
 
 # Wails
-wails.json
 
 # Encrypted data (user-specific)
 ~/.whatsweb/
