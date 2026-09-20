@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Whatsweb</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Sidebar with circular profile avatars (Discord-like) -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <h1>Whatsweb</h1>
+            </div>
+            <div class="profiles-list" id="profilesList">
+                <!-- Profiles will be dynamically added here -->
+            </div>
+            <button class="add-profile-btn" id="addProfileBtn" title="Add new profile">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="12" y1="5" x2="12" y2="19"></line>
+                    <line x1="5" y1="12" x2="19" y2="12"></line>
+                </svg>
+            </button>
+        </aside>
+
+        <!-- Main content area with webview -->
+        <main class="main-content" id="mainContent">
+            <div class="welcome-screen" id="welcomeScreen">
+                <div class="welcome-content">
+                    <svg class="welcome-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                    </svg>
+                    <h2>Welcome to Whatsweb</h2>
+                    <p>Add a WhatsApp profile to get started</p>
+                    <button class="btn-primary" id="welcomeAddBtn">Add Profile</button>
+                </div>
+            </div>
+
+            <div class="webview-container" id="webviewContainer" style="display: none;">
+                <div class="webview-header">
+                    <div class="profile-info" id="profileInfo">
+                        <div class="profile-avatar" id="webviewAvatar"></div>
+                        <span class="profile-name" id="webviewProfileName"></span>
+                    </div>
+                    <div class="webview-actions">
+                        <button class="icon-btn" id="minimizeBtn" title="Minimize">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <line x1="5" y1="12" x2="19" y2="12"></line>
+                            </svg>
+                        </button>
+                        <button class="icon-btn" id="closeBtn" title="Close">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <line x1="18" y1="6" x2="6" y2="18"></line>
+                                <line x1="6" y1="6" x2="18" y2="18"></line>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+                <div class="webview-wrapper">
+                    <webview id="whatsappWebview" src="https://web.whatsapp.com" partition="persist:whatsapp"></webview>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Add Profile Modal -->
+    <div class="modal-overlay" id="modalOverlay" style="display: none;">
+        <div class="modal" id="addProfileModal">
+            <div class="modal-header">
+                <h3>Add New WhatsApp Profile</h3>
+                <button class="modal-close" id="modalClose">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="addProfileForm">
+                    <div class="form-group">
+                        <label for="profileName">Profile Name</label>
+                        <input type="text" id="profileName" name="name" placeholder="e.g., Personal, Work" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="profileUrl">WhatsApp Web URL</label>
+                        <input type="url" id="profileUrl" name="url" value="https://web.whatsapp.com" readonly>
+                    </div>
+                    <div class="form-actions">
+                        <button type="button" class="btn-secondary" id="cancelBtn">Cancel</button>
+                        <button type="submit" class="btn-primary">Create Profile</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

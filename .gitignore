@@ -1,0 +1,29 @@
+# Build outputs
+build/
+bin/
+*.exe
+
+# Dependencies
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Wails
+wails.json
+
+# Encrypted data (user-specific)
+~/.whatsweb/
+
+# Logs
+*.log
+
+# Test outputs
+coverage.out
