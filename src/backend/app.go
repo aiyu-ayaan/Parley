@@ -447,6 +447,8 @@ func (a *App) startSessionWithAutoRestart(id string, hideOnLaunch bool) {
 	a.procMu.Unlock()
 
 	go func(profileID string, c *exec.Cmd) {
+		startTime := time.Now()
+
 		if hideOnLaunch {
 			// Wait for window to spawn, then hide it
 			time.Sleep(1500 * time.Millisecond)
@@ -455,6 +457,8 @@ func (a *App) startSessionWithAutoRestart(id string, hideOnLaunch bool) {
 
 		// Wait for Chrome to exit
 		_ = c.Wait()
+
+		elapsed := time.Since(startTime)
 
 		a.procMu.Lock()
 		delete(a.runningProcesses, profileID)
@@ -469,11 +473,27 @@ func (a *App) startSessionWithAutoRestart(id string, hideOnLaunch bool) {
 		// Auto-restart: if session wasn't intentionally stopped and app isn't shutting down,
 		// relaunch Chrome in background so WhatsApp session stays alive
 		if !stopped && !isShuttingDown {
-			log.Printf("Session %s exited (user closed window), auto-restarting in background...", profileID)
-			// Clean stale lock before restart
-			cleanStaleSingletonLock(sessionDir)
-			time.Sleep(500 * time.Millisecond)
-			a.startSessionWithAutoRestart(profileID, true) // relaunch hidden
+			// Guard against rapid restart loops: if Chrome exited within 3 seconds,
+			// it likely hit a stale lock or startup issue. Wait longer and force-clean.
+			if elapsed < 3*time.Second {
+				log.Printf("Session %s exited too quickly (%.1fs), force-cleaning locks and waiting before retry...", profileID, elapsed.Seconds())
+				forceCleanSingletonLock(sessionDir)
+				time.Sleep(2 * time.Second)
+			} else {
+				log.Printf("Session %s exited (user closed window), auto-restarting in background...", profileID)
+				cleanStaleSingletonLock(sessionDir)
+				time.Sleep(500 * time.Millisecond)
+			}
+
+			// Check again if we should restart (user might have stopped during the wait)
+			a.procMu.Lock()
+			stopped = a.stoppedSessions[profileID]
+			isShuttingDown = a.shuttingDown
+			a.procMu.Unlock()
+
+			if !stopped && !isShuttingDown {
+				a.startSessionWithAutoRestart(profileID, true)
+			}
 		}
 	}(id, cmd)
 
@@ -500,12 +520,18 @@ func cleanStaleSingletonLock(sessionDir string) {
 			if err := syscall.Kill(pid, 0); err != nil {
 				// Process is dead — remove stale locks
 				log.Printf("Removing stale Chrome lock (PID %d is dead) in %s", pid, sessionDir)
-				_ = os.Remove(filepath.Join(sessionDir, "SingletonLock"))
-				_ = os.Remove(filepath.Join(sessionDir, "SingletonSocket"))
-				_ = os.Remove(filepath.Join(sessionDir, "SingletonCookie"))
+				forceCleanSingletonLock(sessionDir)
 			}
 		}
 	}
+}
+
+// forceCleanSingletonLock unconditionally removes all Chrome singleton lock files.
+// Used when Chrome exited abnormally or too quickly and left stale locks behind.
+func forceCleanSingletonLock(sessionDir string) {
+	_ = os.Remove(filepath.Join(sessionDir, "SingletonLock"))
+	_ = os.Remove(filepath.Join(sessionDir, "SingletonSocket"))
+	_ = os.Remove(filepath.Join(sessionDir, "SingletonCookie"))
 }
 
 // silentlyUnmapProfileWindow unmaps/hides the profile window from desktop so it runs in background
