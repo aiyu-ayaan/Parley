@@ -107,6 +107,26 @@ class WhatswebApp {
             });
         }
 
+        // Launch WhatsApp Web button
+        const launchBtn = document.getElementById('launchWhatsappBtn');
+        if (launchBtn) {
+            launchBtn.addEventListener('click', () => {
+                if (this.activeProfileId) {
+                    const api = this.api;
+                    if (api && api.OpenProfile) {
+                        const statusText = document.getElementById('dashboardStatusText');
+                        if (statusText) statusText.textContent = 'Launching Window...';
+                        api.OpenProfile(this.activeProfileId).then(() => {
+                            if (statusText) statusText.textContent = 'Session Active (Window Open)';
+                        }).catch(err => {
+                            console.error('Failed to open profile:', err);
+                            if (statusText) statusText.textContent = 'Ready to Launch';
+                        });
+                    }
+                }
+            });
+        }
+
         // Webview controls
         const closeBtn = document.getElementById('closeBtn');
         if (closeBtn) {
@@ -181,29 +201,40 @@ class WhatswebApp {
     }
 
     openWebview(profile) {
-        // Hide welcome screen, show webview
+        // Hide welcome screen, show webview container
         const welcomeScreen = document.getElementById('welcomeScreen');
         const webviewContainer = document.getElementById('webviewContainer');
         if (welcomeScreen) welcomeScreen.style.display = 'none';
         if (webviewContainer) webviewContainer.style.display = 'flex';
 
         // Update header
+        const initial = (profile.name || '?').charAt(0).toUpperCase();
+
         const profileNameEl = document.getElementById('webviewProfileName');
         if (profileNameEl) profileNameEl.textContent = profile.name;
 
         const avatarEl = document.getElementById('webviewAvatar');
-        if (avatarEl) avatarEl.textContent = (profile.name || '?').charAt(0).toUpperCase();
+        if (avatarEl) avatarEl.textContent = initial;
 
-        // Load webview
-        this.webview = document.getElementById('whatsappWebview');
-        if (this.webview) {
-            this.webview.src = profile.url || 'https://web.whatsapp.com';
-        }
+        // Update dashboard elements
+        const dashAvatarEl = document.getElementById('dashboardAvatar');
+        if (dashAvatarEl) dashAvatarEl.textContent = initial;
 
-        // Notify backend
+        const dashNameEl = document.getElementById('dashboardProfileName');
+        if (dashNameEl) dashNameEl.textContent = profile.name;
+
+        const statusText = document.getElementById('dashboardStatusText');
+        if (statusText) statusText.textContent = 'Launching WhatsApp Web...';
+
+        // Spin the native webview window for this profile
         const api = this.api;
         if (api && api.OpenProfile) {
-            api.OpenProfile(profile.id);
+            api.OpenProfile(profile.id).then(() => {
+                if (statusText) statusText.textContent = 'Session Active (Window Open)';
+            }).catch(err => {
+                console.error('Failed to open profile webview:', err);
+                if (statusText) statusText.textContent = 'Ready to Launch';
+            });
         }
     }
 
@@ -425,6 +456,20 @@ function setupRuntimeEvents() {
                     url: p.url || p.URL || 'https://web.whatsapp.com'
                 }));
                 window.whatsweb.renderProfiles();
+            }
+        });
+
+        wailsRuntime.EventsOn('profile:open', (profileId) => {
+            if (window.whatsweb && window.whatsweb.activeProfileId === profileId) {
+                const statusText = document.getElementById('dashboardStatusText');
+                if (statusText) statusText.textContent = 'Session Active (Window Open)';
+            }
+        });
+
+        wailsRuntime.EventsOn('profile:closed', (profileId) => {
+            if (window.whatsweb && window.whatsweb.activeProfileId === profileId) {
+                const statusText = document.getElementById('dashboardStatusText');
+                if (statusText) statusText.textContent = 'Ready to Launch';
             }
         });
     } else {

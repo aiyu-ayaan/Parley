@@ -57,8 +57,49 @@
                         </button>
                     </div>
                 </div>
-                <div class="webview-wrapper">
-                    <iframe id="whatsappWebview" src="https://web.whatsapp.com" allow="camera; microphone; clipboard-read; clipboard-write; notifications" allowfullscreen></iframe>
+                <div class="profile-dashboard">
+                    <div class="dashboard-card">
+                        <div class="dashboard-avatar" id="dashboardAvatar"></div>
+                        <h2 id="dashboardProfileName"></h2>
+                        <div class="status-indicator">
+                            <span class="status-dot"></span>
+                            <span id="dashboardStatusText">Ready to Launch</span>
+                        </div>
+                        <p class="dashboard-desc">WhatsApp Web runs in an isolated desktop window with encrypted session storage. Scan the QR code once to stay logged in.</p>
+                        <div class="dashboard-actions">
+                            <button class="btn-primary" id="launchWhatsappBtn">
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 8px; vertical-align: middle;">
+                                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                                    <polyline points="15 3 21 3 21 9"></polyline>
+                                    <line x1="10" y1="14" x2="21" y2="3"></line>
+                                </svg>
+                                Open WhatsApp Web
+                            </button>
+                        </div>
+                        <div class="dashboard-features">
+                            <div class="feature-item">
+                                <span class="feature-icon">🔒</span>
+                                <div class="feature-text">
+                                    <strong>Encrypted Storage</strong>
+                                    <span>Profile data & cookies secured with AES-256</span>
+                                </div>
+                            </div>
+                            <div class="feature-item">
+                                <span class="feature-icon">👥</span>
+                                <div class="feature-text">
+                                    <strong>Multi-Account</strong>
+                                    <span>Independent session partition per profile</span>
+                                </div>
+                            </div>
+                            <div class="feature-item">
+                                <span class="feature-icon">⚡</span>
+                                <div class="feature-text">
+                                    <strong>Persistent Login</strong>
+                                    <span>Session stays active without relogging</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </main>

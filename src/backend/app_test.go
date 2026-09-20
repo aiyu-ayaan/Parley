@@ -138,3 +138,24 @@ func TestAppPersistence(t *testing.T) {
 		t.Fatalf("Persisted profile mismatch: got %+v, want %+v", profiles[0], p)
 	}
 }
+
+func TestAppWebviewManagement(t *testing.T) {
+	app, cleanup := createTestApp(t)
+	defer cleanup()
+
+	p, err := app.CreateProfile("Test Webview Profile")
+	if err != nil {
+		t.Fatalf("CreateProfile failed: %v", err)
+	}
+
+	// Initially not running
+	if app.IsProfileRunning(p.ID) {
+		t.Fatalf("Expected profile not to be running initially")
+	}
+
+	// Test CloseProfile on non-running profile should not error
+	if err := app.CloseProfile(p.ID); err != nil {
+		t.Fatalf("CloseProfile on non-running profile failed: %v", err)
+	}
+}
+

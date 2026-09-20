@@ -87,6 +87,11 @@ func NewTestEncryptionService(dataDir string) (*EncryptionService, error) {
 	return NewEncryptionServiceWithDir(dataDir)
 }
 
+// DataDir returns the base directory where data is stored
+func (e *EncryptionService) DataDir() string {
+	return e.dataDir
+}
+
 // getMachineID returns a machine-specific identifier
 func getMachineID() string {
 	// Try to read machine-id
