@@ -35,15 +35,18 @@ type EncryptedData struct {
 	Nonce     string `json:"nonce"`
 }
 
-// NewEncryptionService creates a new encryption service
+// NewEncryptionService creates a new encryption service with default directory
 func NewEncryptionService() (*EncryptionService, error) {
-	// Get user data directory
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err
 	}
 	dataDir := filepath.Join(homeDir, ".whatsweb")
+	return NewEncryptionServiceWithDir(dataDir)
+}
 
+// NewEncryptionServiceWithDir creates an encryption service with a specific directory
+func NewEncryptionServiceWithDir(dataDir string) (*EncryptionService, error) {
 	// Create directory if it doesn't exist
 	if err := os.MkdirAll(dataDir, 0700); err != nil {
 		return nil, err
@@ -68,8 +71,7 @@ func NewEncryptionService() (*EncryptionService, error) {
 		}
 	}
 
-	// For master key, we'll use a combination of machine-specific data
-	// In production, you might want to use OS keyring
+	// For master key, derive from machine ID and salt
 	machineID := getMachineID()
 	masterKey := pbkdf2.Key([]byte(machineID), salt, iterations, keyLength, sha256.New)
 
@@ -78,6 +80,11 @@ func NewEncryptionService() (*EncryptionService, error) {
 		salt:      salt,
 		dataDir:   dataDir,
 	}, nil
+}
+
+// NewTestEncryptionService creates an encryption service for testing in a custom directory
+func NewTestEncryptionService(dataDir string) (*EncryptionService, error) {
+	return NewEncryptionServiceWithDir(dataDir)
 }
 
 // getMachineID returns a machine-specific identifier
@@ -136,8 +143,13 @@ func (e *EncryptionService) Decrypt(data *EncryptedData) ([]byte, error) {
 		return nil, err
 	}
 
-	// Derive key from salt
-	key := pbkdf2.Key([]byte(getMachineID()), salt, iterations, keyLength, sha256.New)
+	// Use master key if salt matches, otherwise derive from salt
+	var key []byte
+	if len(e.masterKey) == keyLength && (len(e.salt) == 0 || string(salt) == string(e.salt)) {
+		key = e.masterKey
+	} else {
+		key = pbkdf2.Key([]byte(getMachineID()), salt, iterations, keyLength, sha256.New)
+	}
 
 	block, err := aes.NewCipher(key)
 	if err != nil {

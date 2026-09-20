@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"crypto/rand"
 	"log"
 	"sync"
 
@@ -78,25 +79,31 @@ func (a *App) loadProfiles() {
 			continue
 		}
 
+		a.mu.Lock()
 		a.profiles[profile.ID] = &profile
+		a.mu.Unlock()
 	}
 }
 
 // saveProfiles saves all profiles to encrypted storage
 func (a *App) saveProfiles() {
 	a.mu.RLock()
-	defer a.mu.RUnlock()
+	profilesCopy := make([]*Profile, 0, len(a.profiles))
+	for _, profile := range a.profiles {
+		profilesCopy = append(profilesCopy, profile)
+	}
+	a.mu.RUnlock()
 
-	for id, profile := range a.profiles {
+	for _, profile := range profilesCopy {
 		encrypted, err := a.encryptionService.EncryptJSON(profile)
 		if err != nil {
-			log.Printf("Failed to encrypt profile %s: %v", id, err)
+			log.Printf("Failed to encrypt profile %s: %v", profile.ID, err)
 			continue
 		}
 
-		filename := id + ".enc"
+		filename := profile.ID + ".enc"
 		if err := a.encryptionService.SaveEncrypted(filename, encrypted); err != nil {
-			log.Printf("Failed to save profile %s: %v", id, err)
+			log.Printf("Failed to save profile %s: %v", profile.ID, err)
 		}
 	}
 }
@@ -104,14 +111,15 @@ func (a *App) saveProfiles() {
 // emitProfiles emits the current profiles to the frontend
 func (a *App) emitProfiles() {
 	a.mu.RLock()
-	defer a.mu.RUnlock()
-
 	profiles := make([]*Profile, 0, len(a.profiles))
 	for _, p := range a.profiles {
 		profiles = append(profiles, p)
 	}
+	a.mu.RUnlock()
 
-	runtime.EventsEmit(a.ctx, "profiles:updated", profiles)
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "profiles:updated", profiles)
+	}
 }
 
 // GetProfiles returns all profiles
@@ -128,16 +136,11 @@ func (a *App) GetProfiles() []*Profile {
 
 // CreateProfile creates a new profile
 func (a *App) CreateProfile(name string) (*Profile, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
 	profile := &Profile{
 		ID:   generateID(),
 		Name: name,
 		URL:  "https://web.whatsapp.com",
 	}
-
-	a.profiles[profile.ID] = profile
 
 	// Save immediately
 	encrypted, err := a.encryptionService.EncryptJSON(profile)
@@ -149,6 +152,10 @@ func (a *App) CreateProfile(name string) (*Profile, error) {
 		return nil, err
 	}
 
+	a.mu.Lock()
+	a.profiles[profile.ID] = profile
+	a.mu.Unlock()
+
 	a.emitProfiles()
 	return profile, nil
 }
@@ -156,13 +163,12 @@ func (a *App) CreateProfile(name string) (*Profile, error) {
 // DeleteProfile deletes a profile
 func (a *App) DeleteProfile(id string) error {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-
 	if _, exists := a.profiles[id]; !exists {
+		a.mu.Unlock()
 		return nil // Already deleted
 	}
-
 	delete(a.profiles, id)
+	a.mu.Unlock()
 
 	filename := id + ".enc"
 	if err := a.encryptionService.DeleteEncrypted(filename); err != nil {
@@ -176,13 +182,12 @@ func (a *App) DeleteProfile(id string) error {
 // UpdateProfile updates a profile
 func (a *App) UpdateProfile(profile *Profile) error {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-
 	if _, exists := a.profiles[profile.ID]; !exists {
+		a.mu.Unlock()
 		return nil
 	}
-
 	a.profiles[profile.ID] = profile
+	a.mu.Unlock()
 
 	encrypted, err := a.encryptionService.EncryptJSON(profile)
 	if err != nil {
@@ -214,12 +219,16 @@ func (a *App) GetActiveProfile() string {
 // OpenProfile opens a profile in the webview
 func (a *App) OpenProfile(id string) {
 	a.SetActiveProfile(id)
-	runtime.EventsEmit(a.ctx, "profile:open", id)
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "profile:open", id)
+	}
 }
 
 // Minimize minimizes the application window
 func (a *App) Minimize() {
-	runtime.WindowMinimise(a.ctx)
+	if a.ctx != nil {
+		runtime.WindowMinimise(a.ctx)
+	}
 }
 
 // generateID generates a simple unique ID
@@ -230,16 +239,23 @@ func generateID() string {
 func randomString(n int) string {
 	const letters = "abcdefghijklmnopqrstuvwxyz0123456789"
 	b := make([]byte, n)
-	for i := range b {
-		b[i] = letters[i%len(letters)]
+	if _, err := rand.Read(b); err != nil {
+		for i := range b {
+			b[i] = byte(i)
+		}
 	}
-	return string(b)
+	result := make([]byte, n)
+	for i := range b {
+		result[i] = letters[int(b[i])%len(letters)]
+	}
+	return string(result)
 }
 
 // Minimal frontend binding types
 type ProfileDTO struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+	URL  string `json:"url"`
 }
 
 func (a *App) GetProfilesDTO() []ProfileDTO {
@@ -248,7 +264,7 @@ func (a *App) GetProfilesDTO() []ProfileDTO {
 
 	result := make([]ProfileDTO, 0, len(a.profiles))
 	for _, p := range a.profiles {
-		result = append(result, ProfileDTO{ID: p.ID, Name: p.Name})
+		result = append(result, ProfileDTO{ID: p.ID, Name: p.Name, URL: p.URL})
 	}
 	return result
 }
