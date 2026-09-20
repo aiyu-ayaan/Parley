@@ -2,7 +2,9 @@ package backend
 
 import (
 	"context"
+	"encoding/json"
 	"os"
+	"path/filepath"
 	"testing"
 	"whatsweb/src/crypto"
 )
@@ -156,6 +158,62 @@ func TestAppWebviewManagement(t *testing.T) {
 	// Test CloseProfile on non-running profile should not error
 	if err := app.CloseProfile(p.ID); err != nil {
 		t.Fatalf("CloseProfile on non-running profile failed: %v", err)
+	}
+
+	status := app.GetProfileStatus(p.ID)
+	if status.ID != p.ID || status.IsRunning || status.HasWindow {
+		t.Fatalf("Unexpected initial profile status: %+v", status)
+	}
+
+	allStatuses := app.GetAllProfileStatuses()
+	if len(allStatuses) != 1 || allStatuses[0].ID != p.ID {
+		t.Fatalf("Unexpected allStatuses: %+v", allStatuses)
+	}
+}
+
+func TestEnsureSessionPreferences(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "whatsweb-prefs-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	if err := ensureSessionPreferences(tempDir); err != nil {
+		t.Fatalf("ensureSessionPreferences failed: %v", err)
+	}
+
+	// Verify Preferences file
+	prefsPath := filepath.Join(tempDir, "Default", "Preferences")
+	data, err := os.ReadFile(prefsPath)
+	if err != nil {
+		t.Fatalf("Failed to read Preferences: %v", err)
+	}
+
+	var prefs map[string]any
+	if err := json.Unmarshal(data, &prefs); err != nil {
+		t.Fatalf("Failed to parse Preferences: %v", err)
+	}
+
+	bgMode, ok := prefs["background_mode"].(map[string]any)
+	if !ok || bgMode["enabled"] != true {
+		t.Fatalf("Expected background_mode.enabled == true, got %+v", bgMode)
+	}
+
+	// Verify Local State file
+	localStatePath := filepath.Join(tempDir, "Local State")
+	lsData, err := os.ReadFile(localStatePath)
+	if err != nil {
+		t.Fatalf("Failed to read Local State: %v", err)
+	}
+
+	var ls map[string]any
+	if err := json.Unmarshal(lsData, &ls); err != nil {
+		t.Fatalf("Failed to parse Local State: %v", err)
+	}
+
+	lsBgMode, ok := ls["background_mode"].(map[string]any)
+	if !ok || lsBgMode["enabled"] != true {
+		t.Fatalf("Expected Local State background_mode.enabled == true, got %+v", lsBgMode)
 	}
 }
 

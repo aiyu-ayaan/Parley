@@ -61,11 +61,15 @@
                     <div class="dashboard-card">
                         <div class="dashboard-avatar" id="dashboardAvatar"></div>
                         <h2 id="dashboardProfileName"></h2>
-                        <div class="status-indicator">
+                        <div class="status-indicator" id="dashboardStatusIndicator">
                             <span class="status-dot"></span>
                             <span id="dashboardStatusText">Ready to Launch</span>
                         </div>
-                        <p class="dashboard-desc">WhatsApp Web runs in an isolated desktop window with encrypted session storage. Scan the QR code once to stay logged in.</p>
+                        <p class="dashboard-desc" id="dashboardDesc">WhatsApp Web runs in an isolated desktop window with encrypted session storage. Scan the QR code once to stay logged in.</p>
+                        <p class="bg-notice" id="dashboardBgNotice" style="display: none;">
+                            <span style="font-size: 16px; margin-right: 6px;">🔔</span>
+                            <strong>Running in background:</strong> Window is closed, but WhatsApp Web remains active to deliver real-time notifications.
+                        </p>
                         <div class="dashboard-actions">
                             <button class="btn-primary" id="launchWhatsappBtn">
                                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 8px; vertical-align: middle;">
@@ -73,10 +77,23 @@
                                     <polyline points="15 3 21 3 21 9"></polyline>
                                     <line x1="10" y1="14" x2="21" y2="3"></line>
                                 </svg>
-                                Open WhatsApp Web
+                                <span id="launchBtnText">Open WhatsApp Web</span>
+                            </button>
+                            <button class="btn-secondary" id="hideWhatsappBtn" style="display: none;" title="Minimize to background while keeping notifications active">
+                                Send to Background
+                            </button>
+                            <button class="btn-danger" id="stopWhatsappBtn" style="display: none;" title="Completely terminate background session">
+                                Stop Session
                             </button>
                         </div>
                         <div class="dashboard-features">
+                            <div class="feature-item">
+                                <span class="feature-icon">🔔</span>
+                                <div class="feature-text">
+                                    <strong>Background Notifications</strong>
+                                    <span>Closing the window keeps WhatsApp running so you never miss messages</span>
+                                </div>
+                            </div>
                             <div class="feature-item">
                                 <span class="feature-icon">🔒</span>
                                 <div class="feature-text">

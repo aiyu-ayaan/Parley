@@ -3,12 +3,15 @@ package backend
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -240,33 +243,130 @@ func (a *App) OpenProfile(id string) error {
 	return a.launchProfileWebview(id)
 }
 
-// CloseProfile closes a profile's webview process
-func (a *App) CloseProfile(id string) error {
-	a.procMu.Lock()
-	defer a.procMu.Unlock()
-
-	if cmd, running := a.runningProcesses[id]; running && cmd != nil && cmd.Process != nil {
-		_ = cmd.Process.Kill()
-		delete(a.runningProcesses, id)
+// HideProfileWindow hides/closes the profile window to the background
+func (a *App) HideProfileWindow(id string) error {
+	if _, err := exec.LookPath("xdotool"); err == nil {
+		cmd := exec.Command("xdotool", "search", "--classname", fmt.Sprintf("whatsweb-%s", id), "windowclose")
+		_ = cmd.Run()
+		if a.ctx != nil {
+			runtime.EventsEmit(a.ctx, "profile:status-changed", a.GetProfileStatus(id))
+		}
+		return nil
+	}
+	if _, err := exec.LookPath("wmctrl"); err == nil {
+		cmd := exec.Command("wmctrl", "-c", fmt.Sprintf("whatsweb-%s", id))
+		_ = cmd.Run()
+		if a.ctx != nil {
+			runtime.EventsEmit(a.ctx, "profile:status-changed", a.GetProfileStatus(id))
+		}
+		return nil
 	}
 	return nil
 }
 
-// IsProfileRunning checks if a profile webview is running
-func (a *App) IsProfileRunning(id string) bool {
+// CloseProfile closes a profile's webview process completely
+func (a *App) CloseProfile(id string) error {
 	a.procMu.Lock()
-	defer a.procMu.Unlock()
+	if cmd, running := a.runningProcesses[id]; running && cmd != nil && cmd.Process != nil {
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		delete(a.runningProcesses, id)
+	}
+	a.procMu.Unlock()
 
+	// Also terminate any background chrome processes for this session directory
+	sessionDir := filepath.Join(a.encryptionService.DataDir(), "sessions", id)
+	_ = exec.Command("pkill", "-TERM", "-f", fmt.Sprintf("user-data-dir=%s", sessionDir)).Run()
+
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "profile:status-changed", a.GetProfileStatus(id))
+	}
+	return nil
+}
+
+// getSessionPID returns the PID of the profile process if running
+func (a *App) getSessionPID(id string) int {
+	a.procMu.Lock()
 	if cmd, running := a.runningProcesses[id]; running && cmd != nil && cmd.Process != nil {
 		if err := cmd.Process.Signal(syscall.Signal(0)); err == nil {
-			return true
+			a.procMu.Unlock()
+			return cmd.Process.Pid
 		}
 		delete(a.runningProcesses, id)
 	}
-	return false
+	a.procMu.Unlock()
+
+	// Check if running from outside or previous launch
+	sessionDir := filepath.Join(a.encryptionService.DataDir(), "sessions", id)
+	out, err := exec.Command("pgrep", "-f", fmt.Sprintf("user-data-dir=%s", sessionDir)).Output()
+	if err == nil {
+		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+		for _, line := range lines {
+			if pid, err := strconv.Atoi(strings.TrimSpace(line)); err == nil && pid > 0 {
+				return pid
+			}
+		}
+	}
+	return 0
 }
 
-// launchProfileWebview spawns a dedicated webview window for the profile
+// IsProfileRunning checks if a profile webview or background process is running
+func (a *App) IsProfileRunning(id string) bool {
+	return a.getSessionPID(id) > 0
+}
+
+// IsProfileWindowOpen checks if the profile's desktop window is currently visible
+func (a *App) IsProfileWindowOpen(id string) bool {
+	return isProfileWindowVisible(id)
+}
+
+// ProfileStatus represents the live state of a profile
+type ProfileStatus struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	IsRunning bool   `json:"isRunning"`
+	HasWindow bool   `json:"hasWindow"`
+}
+
+// GetProfileStatus returns the live status of a single profile
+func (a *App) GetProfileStatus(id string) ProfileStatus {
+	a.mu.RLock()
+	name := ""
+	if p, ok := a.profiles[id]; ok {
+		name = p.Name
+	}
+	a.mu.RUnlock()
+
+	running := a.IsProfileRunning(id)
+	hasWindow := false
+	if running {
+		hasWindow = a.IsProfileWindowOpen(id)
+	}
+
+	return ProfileStatus{
+		ID:        id,
+		Name:      name,
+		IsRunning: running,
+		HasWindow: hasWindow,
+	}
+}
+
+// GetAllProfileStatuses returns live status for all profiles
+func (a *App) GetAllProfileStatuses() []ProfileStatus {
+	a.mu.RLock()
+	ids := make([]string, 0, len(a.profiles))
+	for id := range a.profiles {
+		ids = append(ids, id)
+	}
+	a.mu.RUnlock()
+
+	statuses := make([]ProfileStatus, 0, len(ids))
+	for _, id := range ids {
+		statuses = append(statuses, a.GetProfileStatus(id))
+	}
+	return statuses
+}
+
+// launchProfileWebview spawns or restores a dedicated webview window for the profile
 func (a *App) launchProfileWebview(id string) error {
 	a.mu.RLock()
 	profile, exists := a.profiles[id]
@@ -275,19 +375,24 @@ func (a *App) launchProfileWebview(id string) error {
 		return fmt.Errorf("profile %s not found", id)
 	}
 
-	a.procMu.Lock()
-	if cmd, running := a.runningProcesses[id]; running && cmd != nil && cmd.Process != nil {
-		if err := cmd.Process.Signal(syscall.Signal(0)); err == nil {
-			a.procMu.Unlock()
-			log.Printf("Profile %s is already running", id)
-			return nil
-		}
-	}
-	a.procMu.Unlock()
-
 	sessionDir := filepath.Join(a.encryptionService.DataDir(), "sessions", id)
 	if err := os.MkdirAll(sessionDir, 0700); err != nil {
 		return fmt.Errorf("failed to create session directory: %w", err)
+	}
+
+	// Configure background mode and desktop notification permissions in preferences
+	if err := ensureSessionPreferences(sessionDir); err != nil {
+		log.Printf("Warning: failed to configure session preferences: %v", err)
+	}
+
+	// 1. If window is already open and visible, bring it to front
+	if isProfileWindowVisible(id) {
+		log.Printf("Profile %s window is already visible, focusing it", id)
+		focusProfileWindow(id)
+		if a.ctx != nil {
+			runtime.EventsEmit(a.ctx, "profile:status-changed", a.GetProfileStatus(id))
+		}
+		return nil
 	}
 
 	targetURL := profile.URL
@@ -295,6 +400,21 @@ func (a *App) launchProfileWebview(id string) error {
 		targetURL = "https://web.whatsapp.com"
 	}
 
+	// 2. If Chrome process is running in the background, send reopen command to active instance
+	pid := a.getSessionPID(id)
+	if pid > 0 {
+		log.Printf("Profile %s background process is running (PID %d), triggering window reopen", id, pid)
+		restoreCmd, err := createWebviewCommand(id, profile.Name, targetURL, sessionDir)
+		if err == nil {
+			_ = restoreCmd.Run()
+			if a.ctx != nil {
+				runtime.EventsEmit(a.ctx, "profile:status-changed", a.GetProfileStatus(id))
+			}
+			return nil
+		}
+	}
+
+	// 3. Not running, launch fresh process with background mode enabled
 	cmd, err := createWebviewCommand(id, profile.Name, targetURL, sessionDir)
 	if err != nil {
 		return err
@@ -314,16 +434,145 @@ func (a *App) launchProfileWebview(id string) error {
 		delete(a.runningProcesses, id)
 		a.procMu.Unlock()
 		if a.ctx != nil {
-			runtime.EventsEmit(a.ctx, "profile:closed", id)
+			runtime.EventsEmit(a.ctx, "profile:status-changed", a.GetProfileStatus(id))
 		}
 	}()
+
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "profile:status-changed", a.GetProfileStatus(id))
+	}
 
 	return nil
 }
 
-// createWebviewCommand creates the command to run the webview
+// ensureSessionPreferences ensures Chrome profile has background_mode and notifications enabled
+func ensureSessionPreferences(sessionDir string) error {
+	defaultDir := filepath.Join(sessionDir, "Default")
+	if err := os.MkdirAll(defaultDir, 0700); err != nil {
+		return err
+	}
+
+	// 1. Update Default/Preferences
+	prefsPath := filepath.Join(defaultDir, "Preferences")
+	var prefs map[string]any
+	if data, err := os.ReadFile(prefsPath); err == nil {
+		_ = json.Unmarshal(data, &prefs)
+	}
+	if prefs == nil {
+		prefs = make(map[string]any)
+	}
+
+	bgMode, ok := prefs["background_mode"].(map[string]any)
+	if !ok {
+		bgMode = make(map[string]any)
+		prefs["background_mode"] = bgMode
+	}
+	bgMode["enabled"] = true
+
+	profile, ok := prefs["profile"].(map[string]any)
+	if !ok {
+		profile = make(map[string]any)
+		prefs["profile"] = profile
+	}
+	contentSettings, ok := profile["content_settings"].(map[string]any)
+	if !ok {
+		contentSettings = make(map[string]any)
+		profile["content_settings"] = contentSettings
+	}
+	exceptions, ok := contentSettings["exceptions"].(map[string]any)
+	if !ok {
+		exceptions = make(map[string]any)
+		contentSettings["exceptions"] = exceptions
+	}
+	notifications, ok := exceptions["notifications"].(map[string]any)
+	if !ok {
+		notifications = make(map[string]any)
+		exceptions["notifications"] = notifications
+	}
+	notifications["https://web.whatsapp.com:443,*"] = map[string]any{"setting": 1}
+
+	sound, ok := exceptions["sound"].(map[string]any)
+	if !ok {
+		sound = make(map[string]any)
+		exceptions["sound"] = sound
+	}
+	sound["https://web.whatsapp.com:443,*"] = map[string]any{"setting": 1}
+
+	if out, err := json.MarshalIndent(prefs, "", "  "); err == nil {
+		_ = os.WriteFile(prefsPath, out, 0600)
+	}
+
+	// 2. Update Local State
+	localStatePath := filepath.Join(sessionDir, "Local State")
+	var localState map[string]any
+	if lsData, err := os.ReadFile(localStatePath); err == nil {
+		_ = json.Unmarshal(lsData, &localState)
+	}
+	if localState == nil {
+		localState = make(map[string]any)
+	}
+	lsBgMode, ok := localState["background_mode"].(map[string]any)
+	if !ok {
+		lsBgMode = make(map[string]any)
+		localState["background_mode"] = lsBgMode
+	}
+	lsBgMode["enabled"] = true
+
+	if out, err := json.MarshalIndent(localState, "", "  "); err == nil {
+		_ = os.WriteFile(localStatePath, out, 0600)
+	}
+
+	return nil
+}
+
+// isProfileWindowVisible checks if a window with class whatsweb-<id> exists on the desktop
+func isProfileWindowVisible(id string) bool {
+	targetClass := fmt.Sprintf("whatsweb-%s", id)
+
+	// Check with xdotool
+	if _, err := exec.LookPath("xdotool"); err == nil {
+		cmd := exec.Command("xdotool", "search", "--classname", targetClass)
+		out, err := cmd.Output()
+		if err == nil && len(strings.TrimSpace(string(out))) > 0 {
+			return true
+		}
+	}
+
+	// Check with wmctrl
+	if _, err := exec.LookPath("wmctrl"); err == nil {
+		cmd := exec.Command("wmctrl", "-x", "-l")
+		out, err := cmd.Output()
+		if err == nil && strings.Contains(string(out), targetClass) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// focusProfileWindow activates and brings the profile window to the front
+func focusProfileWindow(id string) bool {
+	targetClass := fmt.Sprintf("whatsweb-%s", id)
+
+	if _, err := exec.LookPath("wmctrl"); err == nil {
+		cmd := exec.Command("wmctrl", "-x", "-a", targetClass)
+		if err := cmd.Run(); err == nil {
+			return true
+		}
+	}
+
+	if _, err := exec.LookPath("xdotool"); err == nil {
+		cmd := exec.Command("xdotool", "search", "--classname", targetClass, "windowactivate")
+		if err := cmd.Run(); err == nil {
+			return true
+		}
+	}
+
+	return false
+}
+
+// createWebviewCommand creates the command to run the webview with background mode enabled
 func createWebviewCommand(id, name, targetURL, sessionDir string) (*exec.Cmd, error) {
-	// Look for Chromium-based browser for full WhatsApp Web desktop app mode
 	browsers := []string{
 		"google-chrome",
 		"google-chrome-stable",
@@ -340,24 +589,26 @@ func createWebviewCommand(id, name, targetURL, sessionDir string) (*exec.Cmd, er
 				fmt.Sprintf("--user-data-dir=%s", sessionDir),
 				fmt.Sprintf("--class=whatsweb-%s", id),
 				fmt.Sprintf("--name=whatsweb-%s", id),
+				"--enable-background-mode",
 				"--no-first-run",
 				"--no-default-browser-check",
+				"--password-store=basic",
 			}
 			return exec.Command(path, args...), nil
 		}
 	}
 
-	// Fallback to Python3 WebKitGTK standalone window
+	// Fallback to Python3 WebKitGTK standalone window with hide-on-close
 	if pyPath, err := exec.LookPath("python3"); err == nil {
 		script := `
-import sys, os
+import sys, os, signal
 import gi
 try:
     gi.require_version('Gtk', '3.0')
     gi.require_version('WebKit2', '4.1')
 except ValueError:
     gi.require_version('WebKit2', '4.0')
-from gi.repository import Gtk, WebKit2
+from gi.repository import Gtk, WebKit2, GLib
 
 session_dir = sys.argv[1]
 target_url = sys.argv[2]
@@ -376,16 +627,78 @@ settings.set_enable_developer_extras(True)
 
 win = Gtk.Window(title=title)
 win.set_default_size(1024, 768)
-win.connect('destroy', Gtk.main_quit)
+
+# Close-to-background: hide window on close event so session and notifications stay active
+def on_delete(window, event):
+    window.hide()
+    return True
+
+win.connect('delete-event', on_delete)
 win.add(view)
 win.show_all()
 view.load_uri(target_url)
+
+# Handle SIGUSR1 to restore/unhide window
+def on_sigusr1(signum, frame):
+    GLib.idle_add(lambda: (win.show_all(), win.present()))
+
+signal.signal(signal.SIGUSR1, on_sigusr1)
+
 Gtk.main()
 `
 		return exec.Command(pyPath, "-c", script, sessionDir, targetURL, fmt.Sprintf("Whatsweb - %s", name)), nil
 	}
 
 	return nil, errors.New("no supported browser or WebKit engine found to launch webview")
+}
+
+// IsAutoStart returns true if autostart desktop entry exists
+func (a *App) IsAutoStart() bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	path := filepath.Join(home, ".config", "autostart", "whatsweb.desktop")
+	_, err = os.Stat(path)
+	return err == nil
+}
+
+// SetAutoStart enables or disables Linux desktop autostart
+func (a *App) SetAutoStart(enabled bool) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	autostartDir := filepath.Join(home, ".config", "autostart")
+	desktopPath := filepath.Join(autostartDir, "whatsweb.desktop")
+
+	if !enabled {
+		_ = os.Remove(desktopPath)
+		return nil
+	}
+
+	if err := os.MkdirAll(autostartDir, 0755); err != nil {
+		return err
+	}
+
+	exePath, err := os.Executable()
+	if err != nil {
+		return err
+	}
+
+	content := fmt.Sprintf(`[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Whatsweb
+Comment=WhatsApp Web Desktop Application
+Exec=%s
+Icon=whatsweb
+Terminal=false
+Categories=Network;InstantMessaging;
+StartupNotify=true
+`, exePath)
+
+	return os.WriteFile(desktopPath, []byte(content), 0644)
 }
 
 // Minimize minimizes the application window
@@ -432,3 +745,4 @@ func (a *App) GetProfilesDTO() []ProfileDTO {
 	}
 	return result
 }
+
