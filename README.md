@@ -42,34 +42,38 @@ cd Whatsweb
 # Install dependencies
 go mod tidy
 
-# Option 1: Build with Wails (requires pkg-config workaround for webkit2gtk-4.1)
-# Create a pkgconfig symlink for webkit2gtk-4.0 -> webkit2gtk-4.1
+# Create pkg-config workaround for webkit2gtk-4.1
 mkdir -p pkgconfig
 ln -sf /usr/lib/x86_64-linux-gnu/pkgconfig/webkit2gtk-4.1.pc pkgconfig/webkit2gtk-4.0.pc
 
-# Build with custom PKG_CONFIG_PATH
+# Build with Wails (production binary with packaging) - RECOMMENDED
 PKG_CONFIG_PATH=./pkgconfig:$PKG_CONFIG_PATH ~/go/bin/wails build
-
-# Option 2: Direct Go build (faster, no packaging)
-go build -o Whatsweb .
 
 # Production binary will be in build/bin/Whatsweb
 ```
 
 ## Running
 
-### Development Mode
+### Development Workflow
 ```bash
-PKG_CONFIG_PATH=./pkgconfig:$PKG_CONFIG_PATH ~/go/bin/wails dev
+# 1. Make changes to frontend (frontend/dist/) or backend (src/)
+
+# 2. Rebuild and test (fast rebuild)
+PKG_CONFIG_PATH=./pkgconfig:$PKG_CONFIG_PATH ~/go/bin/wails build
+
+# 3. Run the binary
+./build/bin/Whatsweb
 ```
+
+> **Note**: 
+> - `wails dev` requires a Vite dev server for hot reloading. This project uses static HTML/CSS/JS files, so `wails dev` will not work.
+> - `go run .` directly won't work because Wails injects build tags at build time.
+> - Use `wails build` + run binary for development iteration.
 
 ### Production
 ```bash
-# After building
+# After Wails build
 ./build/bin/Whatsweb
-
-# Or if built directly with go build
-./Whatsweb
 ```
 
 Or install system-wide:
@@ -128,7 +132,7 @@ Whatsweb/
 
 1. Backend: Add methods to `src/backend/app.go`
 2. Frontend: Modify `frontend/dist/app.js` and `styles.css`
-3. Rebuild: `wails dev` for live reload
+3. Test: `PKG_CONFIG_PATH=./pkgconfig:$PKG_CONFIG_PATH ~/go/bin/wails build && ./build/bin/Whatsweb`
 
 ### Bindings
 
@@ -173,6 +177,12 @@ systemctl --user enable --now whatsweb
 
 ### "Overriding existing handler for signal 10" warning
 - This is a normal WebKit/JSC warning, not an error. The app works correctly.
+
+### "wails dev" fails with Vite timeout
+- This project uses static frontend files, not Vite. Use `wails build` instead of `wails dev`.
+
+### "go run" fails with build tags error
+- Wails injects required build tags at build time. Use `wails build` instead of `go run`.
 
 ## License
 
