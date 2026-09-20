@@ -1,5 +1,20 @@
 // Whatsweb Frontend Application
 
+// Ensure compatibility between window.go.backend and window.go.main
+function getBackendApp() {
+    if (window.go) {
+        if (window.go.backend && window.go.backend.App) {
+            if (!window.go.main) window.go.main = {};
+            window.go.main.App = window.go.backend.App;
+            return window.go.backend.App;
+        }
+        if (window.go.main && window.go.main.App) {
+            return window.go.main.App;
+        }
+    }
+    return null;
+}
+
 class WhatswebApp {
     constructor() {
         this.profiles = [];
@@ -9,10 +24,13 @@ class WhatswebApp {
         this.init();
     }
 
+    get api() {
+        return getBackendApp();
+    }
+
     async init() {
         // Wait for Wails to be ready
-        if (typeof window.go === 'undefined') {
-            // Wait a bit for Wails to initialize
+        if (!this.api) {
             setTimeout(() => this.init(), 100);
             return;
         }
@@ -24,35 +42,50 @@ class WhatswebApp {
 
     bindEvents() {
         // Add profile button
-        document.getElementById('addProfileBtn').addEventListener('click', () => this.openModal());
-        document.getElementById('welcomeAddBtn').addEventListener('click', () => this.openModal());
+        const addBtn = document.getElementById('addProfileBtn');
+        if (addBtn) addBtn.addEventListener('click', () => this.openModal());
+
+        const welcomeBtn = document.getElementById('welcomeAddBtn');
+        if (welcomeBtn) welcomeBtn.addEventListener('click', () => this.openModal());
         
         // Modal events
-        document.getElementById('modalClose').addEventListener('click', () => this.closeModal());
-        document.getElementById('cancelBtn').addEventListener('click', () => this.closeModal());
-        document.getElementById('modalOverlay').addEventListener('click', (e) => {
-            if (e.target === document.getElementById('modalOverlay')) {
-                this.closeModal();
-            }
-        });
+        const modalClose = document.getElementById('modalClose');
+        if (modalClose) modalClose.addEventListener('click', () => this.closeModal());
+
+        const cancelBtn = document.getElementById('cancelBtn');
+        if (cancelBtn) cancelBtn.addEventListener('click', () => this.closeModal());
+
+        const modalOverlay = document.getElementById('modalOverlay');
+        if (modalOverlay) {
+            modalOverlay.addEventListener('click', (e) => {
+                if (e.target === modalOverlay) {
+                    this.closeModal();
+                }
+            });
+        }
         
         // Form submission
-        document.getElementById('addProfileForm').addEventListener('submit', (e) => this.handleCreateProfile(e));
+        const form = document.getElementById('addProfileForm');
+        if (form) form.addEventListener('submit', (e) => this.handleCreateProfile(e));
         
         // Webview controls
-        document.getElementById('closeBtn').addEventListener('click', () => this.closeWebview());
-        document.getElementById('minimizeBtn').addEventListener('click', () => this.minimizeApp());
-        
-        // Listen for backend events
-        if (window.go && window.go.main && window.go.main.App) {
-            // Events will be handled via runtime.EventsOn in Go
-        }
+        const closeBtn = document.getElementById('closeBtn');
+        if (closeBtn) closeBtn.addEventListener('click', () => this.closeWebview());
+
+        const minimizeBtn = document.getElementById('minimizeBtn');
+        if (minimizeBtn) minimizeBtn.addEventListener('click', () => this.minimizeApp());
     }
 
     async loadProfiles() {
         try {
-            const result = await window.go.main.App.GetProfilesDTO();
-            this.profiles = result || [];
+            if (this.api && this.api.GetProfilesDTO) {
+                const result = await this.api.GetProfilesDTO();
+                this.profiles = (result || []).map(p => ({
+                    id: p.id || p.ID,
+                    name: p.name || p.Name,
+                    url: p.url || p.URL || 'https://web.whatsapp.com'
+                }));
+            }
         } catch (err) {
             console.error('Failed to load profiles:', err);
             this.profiles = [];
@@ -61,6 +94,7 @@ class WhatswebApp {
 
     renderProfiles() {
         const container = document.getElementById('profilesList');
+        if (!container) return;
         container.innerHTML = '';
 
         this.profiles.forEach(profile => {
@@ -74,7 +108,7 @@ class WhatswebApp {
         div.className = 'profile-item' + (profile.id === this.activeProfileId ? ' active' : '');
         div.dataset.profileId = profile.id;
         
-        const initial = profile.name.charAt(0).toUpperCase();
+        const initial = (profile.name || '?').charAt(0).toUpperCase();
         
         div.innerHTML = `
             <div class="profile-avatar">${initial}</div>
@@ -104,60 +138,83 @@ class WhatswebApp {
 
     openWebview(profile) {
         // Hide welcome screen, show webview
-        document.getElementById('welcomeScreen').style.display = 'none';
-        document.getElementById('webviewContainer').style.display = 'flex';
+        const welcomeScreen = document.getElementById('welcomeScreen');
+        const webviewContainer = document.getElementById('webviewContainer');
+        if (welcomeScreen) welcomeScreen.style.display = 'none';
+        if (webviewContainer) webviewContainer.style.display = 'flex';
         
         // Update header
-        document.getElementById('webviewProfileName').textContent = profile.name;
-        const avatar = document.getElementById('webviewAvatar');
-        avatar.textContent = profile.name.charAt(0).toUpperCase();
+        const profileNameEl = document.getElementById('webviewProfileName');
+        if (profileNameEl) profileNameEl.textContent = profile.name;
+
+        const avatarEl = document.getElementById('webviewAvatar');
+        if (avatarEl) avatarEl.textContent = (profile.name || '?').charAt(0).toUpperCase();
         
         // Load webview
         this.webview = document.getElementById('whatsappWebview');
-        this.webview.src = profile.url;
+        if (this.webview) {
+            this.webview.src = profile.url || 'https://web.whatsapp.com';
+        }
         
         // Notify backend
-        window.go.main.App.OpenProfile(profile.id);
+        if (this.api && this.api.OpenProfile) {
+            this.api.OpenProfile(profile.id);
+        }
     }
 
     closeWebview() {
-        document.getElementById('welcomeScreen').style.display = 'flex';
-        document.getElementById('webviewContainer').style.display = 'none';
+        const welcomeScreen = document.getElementById('welcomeScreen');
+        const webviewContainer = document.getElementById('webviewContainer');
+        if (welcomeScreen) welcomeScreen.style.display = 'flex';
+        if (webviewContainer) webviewContainer.style.display = 'none';
         this.activeProfileId = null;
         document.querySelectorAll('.profile-item').forEach(item => item.classList.remove('active'));
     }
 
     minimizeApp() {
-        if (window.go && window.go.main && window.go.main.App) {
-            window.go.main.App.Minimize();
+        if (this.api && this.api.Minimize) {
+            this.api.Minimize();
         }
     }
 
     openModal() {
-        document.getElementById('modalOverlay').style.display = 'flex';
-        document.getElementById('profileName').focus();
+        const modalOverlay = document.getElementById('modalOverlay');
+        if (modalOverlay) modalOverlay.style.display = 'flex';
+        const profileName = document.getElementById('profileName');
+        if (profileName) profileName.focus();
     }
 
     closeModal() {
-        document.getElementById('modalOverlay').style.display = 'none';
-        document.getElementById('addProfileForm').reset();
+        const modalOverlay = document.getElementById('modalOverlay');
+        if (modalOverlay) modalOverlay.style.display = 'none';
+        const form = document.getElementById('addProfileForm');
+        if (form) form.reset();
     }
 
     async handleCreateProfile(e) {
         e.preventDefault();
         
-        const name = document.getElementById('profileName').value.trim();
+        const nameInput = document.getElementById('profileName');
+        const name = nameInput ? nameInput.value.trim() : '';
         if (!name) return;
         
         try {
-            const profile = await window.go.main.App.CreateProfile(name);
-            this.profiles.push({ id: profile.id, name: profile.name });
+            if (!this.api || !this.api.CreateProfile) {
+                throw new Error('Wails backend API is not available');
+            }
+            const profile = await this.api.CreateProfile(name);
+            const newProfile = {
+                id: profile.id || profile.ID,
+                name: profile.name || profile.Name,
+                url: profile.url || profile.URL || 'https://web.whatsapp.com'
+            };
+            this.profiles.push(newProfile);
             this.renderProfiles();
             this.closeModal();
-            this.selectProfile(profile.id);
+            this.selectProfile(newProfile.id);
         } catch (err) {
             console.error('Failed to create profile:', err);
-            alert('Failed to create profile: ' + err.message);
+            alert('Failed to create profile: ' + (err.message || err));
         }
     }
 
@@ -197,8 +254,8 @@ class WhatswebApp {
         document.body.appendChild(menu);
         
         // Close on click outside
-        const closeMenu = (e) => {
-            if (!menu.contains(e.target)) {
+        const closeMenu = (ev) => {
+            if (!menu.contains(ev.target)) {
                 menu.remove();
                 document.removeEventListener('click', closeMenu);
             }
@@ -227,24 +284,32 @@ class WhatswebApp {
     async renameProfile(id, newName) {
         try {
             const profile = this.profiles.find(p => p.id === id);
-            if (profile) {
+            if (profile && this.api && this.api.UpdateProfile) {
                 profile.name = newName;
-                await window.go.main.App.UpdateProfile(profile);
+                await this.api.UpdateProfile({
+                    id: profile.id,
+                    name: profile.name,
+                    url: profile.url || 'https://web.whatsapp.com'
+                });
                 this.renderProfiles();
                 if (this.activeProfileId === id) {
-                    document.getElementById('webviewProfileName').textContent = newName;
-                    document.getElementById('webviewAvatar').textContent = newName.charAt(0).toUpperCase();
+                    const profileNameEl = document.getElementById('webviewProfileName');
+                    if (profileNameEl) profileNameEl.textContent = newName;
+                    const avatarEl = document.getElementById('webviewAvatar');
+                    if (avatarEl) avatarEl.textContent = newName.charAt(0).toUpperCase();
                 }
             }
         } catch (err) {
             console.error('Failed to rename profile:', err);
-            alert('Failed to rename profile: ' + err.message);
+            alert('Failed to rename profile: ' + (err.message || err));
         }
     }
 
     async deleteProfile(id) {
         try {
-            await window.go.main.App.DeleteProfile(id);
+            if (this.api && this.api.DeleteProfile) {
+                await this.api.DeleteProfile(id);
+            }
             this.profiles = this.profiles.filter(p => p.id !== id);
             this.renderProfiles();
             
@@ -253,7 +318,7 @@ class WhatswebApp {
             }
         } catch (err) {
             console.error('Failed to delete profile:', err);
-            alert('Failed to delete profile: ' + err.message);
+            alert('Failed to delete profile: ' + (err.message || err));
         }
     }
 
@@ -270,11 +335,21 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // Listen for profile updates from backend
-if (typeof runtime !== 'undefined') {
-    runtime.EventsOn('profiles:updated', (profiles) => {
-        if (window.whatsweb) {
-            window.whatsweb.profiles = profiles.map(p => ({ id: p.ID, name: p.Name }));
-            window.whatsweb.renderProfiles();
-        }
-    });
+function setupRuntimeEvents() {
+    const wailsRuntime = window.runtime || (typeof runtime !== 'undefined' ? runtime : null);
+    if (wailsRuntime && wailsRuntime.EventsOn) {
+        wailsRuntime.EventsOn('profiles:updated', (profiles) => {
+            if (window.whatsweb) {
+                window.whatsweb.profiles = (profiles || []).map(p => ({
+                    id: p.id || p.ID,
+                    name: p.name || p.Name,
+                    url: p.url || p.URL || 'https://web.whatsapp.com'
+                }));
+                window.whatsweb.renderProfiles();
+            }
+        });
+    } else {
+        setTimeout(setupRuntimeEvents, 200);
+    }
 }
+setupRuntimeEvents();

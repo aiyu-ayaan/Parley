@@ -3,8 +3,7 @@
   "outputfilename": "Whatsweb",
   "frontend:install": "echo 'No frontend install needed'",
   "frontend:build": "echo 'No frontend build needed'",
-  "frontend:dev:watcher": "echo 'No frontend dev server'",
-  "frontend:dev:serverUrl": "auto",
+
   "author": {
     "name": "aiyu",
     "email": "aiyu@example.com"
@@ -14,5 +13,6 @@
     "productName": "Whatsweb",
     "productVersion": "1.0.0",
     "copyright": "Copyright © 2024 aiyu. All rights reserved."
-  }
+  },
+  "assetsdir": "frontend/dist"
 }

@@ -47,6 +47,10 @@ mkdir -p pkgconfig
 ln -sf /usr/lib/x86_64-linux-gnu/pkgconfig/webkit2gtk-4.1.pc pkgconfig/webkit2gtk-4.0.pc
 
 # Build with Wails (production binary with packaging) - RECOMMENDED
+# Build with script (handles PKG_CONFIG_PATH automatically)
+./build.sh
+
+# Or build manually with Wails:
 PKG_CONFIG_PATH=./pkgconfig:$PKG_CONFIG_PATH ~/go/bin/wails build
 
 # Production binary will be in build/bin/Whatsweb
@@ -54,21 +58,23 @@ PKG_CONFIG_PATH=./pkgconfig:$PKG_CONFIG_PATH ~/go/bin/wails build
 
 ## Running
 
-### Development Workflow
+### Development Mode (with Live Reload)
 ```bash
-# 1. Make changes to frontend (frontend/dist/) or backend (src/)
+# Run dev mode directly
+./dev.sh
 
-# 2. Rebuild and test (fast rebuild)
-PKG_CONFIG_PATH=./pkgconfig:$PKG_CONFIG_PATH ~/go/bin/wails build
-
-# 3. Run the binary
-./build/bin/Whatsweb
+# Or run via wails dev manually:
+PKG_CONFIG_PATH=./pkgconfig:$PKG_CONFIG_PATH ~/go/bin/wails dev
 ```
 
-> **Note**: 
-> - `wails dev` requires a Vite dev server for hot reloading. This project uses static HTML/CSS/JS files, so `wails dev` will not work.
-> - `go run .` directly won't work because Wails injects build tags at build time.
-> - Use `wails build` + run binary for development iteration.
+### Production Build & Run
+```bash
+# Rebuild binary
+./build.sh
+
+# Run binary
+./build/bin/Whatsweb
+```
 
 ### Production
 ```bash
