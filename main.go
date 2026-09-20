@@ -15,6 +15,11 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
+// App struct binds App in the main package for Wails
+type App struct {
+	*backend.App
+}
+
 func main() {
 	// Initialize encryption service
 	encryptionService, err := crypto.NewEncryptionService()
@@ -23,7 +28,8 @@ func main() {
 	}
 
 	// Create backend app instance
-	app := backend.NewApp(encryptionService)
+	backendApp := backend.NewApp(encryptionService)
+	mainApp := &App{App: backendApp}
 
 	// Create application with options
 	err = wails.Run(&options.App{
@@ -34,12 +40,13 @@ func main() {
 			Assets: assets,
 		},
 		BackgroundColour: &options.RGBA{R: 255, G: 255, B: 255, A: 255},
-		OnStartup:        app.Startup,
-		OnDomReady:       app.DomReady,
-		OnBeforeClose:    app.BeforeClose,
-		OnShutdown:       app.Shutdown,
+		OnStartup:        backendApp.Startup,
+		OnDomReady:       backendApp.DomReady,
+		OnBeforeClose:    backendApp.BeforeClose,
+		OnShutdown:       backendApp.Shutdown,
 		Bind: []interface{}{
-			app,
+			backendApp,
+			mainApp,
 		},
 	})
 
