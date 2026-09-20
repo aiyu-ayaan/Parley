@@ -357,21 +357,7 @@ body {
     color: var(--text-secondary);
     font-size: 14px;
     line-height: 1.5;
-    margin-bottom: 16px;
-}
-
-.bg-notice {
-    background: rgba(0, 168, 132, 0.1);
-    border: 1px solid rgba(0, 168, 132, 0.3);
-    border-radius: 8px;
-    padding: 12px 16px;
-    color: var(--text-primary);
-    font-size: 13px;
-    line-height: 1.4;
-    margin-bottom: 20px;
-    display: flex;
-    align-items: center;
-    text-align: left;
+    margin-bottom: 24px;
 }
 
 .dashboard-actions {
@@ -468,23 +454,6 @@ body {
 .btn-secondary:hover {
     background: var(--bg-tertiary);
     border-color: var(--text-secondary);
-}
-
-.btn-danger {
-    background: transparent;
-    color: #ea4335;
-    border: 1px solid rgba(234, 67, 53, 0.4);
-    padding: 12px 20px;
-    border-radius: 8px;
-    font-size: 14px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all 0.2s ease;
-}
-
-.btn-danger:hover {
-    background: rgba(234, 67, 53, 0.15);
-    border-color: #ea4335;
 }
 
 /* Modal */

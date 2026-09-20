@@ -137,34 +137,22 @@ class WhatswebApp {
         const indicator = document.getElementById('dashboardStatusIndicator');
         const statusText = document.getElementById('dashboardStatusText');
         const launchBtnText = document.getElementById('launchBtnText');
-        const bgNotice = document.getElementById('dashboardBgNotice');
-        const hideBtn = document.getElementById('hideWhatsappBtn');
-        const stopBtn = document.getElementById('stopWhatsappBtn');
 
         const isRunning = status ? (status.isRunning !== undefined ? status.isRunning : status.IsRunning) : false;
         const hasWindow = status ? (status.hasWindow !== undefined ? status.hasWindow : status.HasWindow) : false;
 
         if (isRunning && hasWindow) {
             if (indicator) indicator.className = 'status-indicator active-window';
-            if (statusText) statusText.textContent = 'Active (Window Open)';
+            if (statusText) statusText.textContent = 'Window Open';
             if (launchBtnText) launchBtnText.textContent = 'Bring Window to Front';
-            if (bgNotice) bgNotice.style.display = 'none';
-            if (hideBtn) hideBtn.style.display = 'inline-flex';
-            if (stopBtn) stopBtn.style.display = 'inline-flex';
         } else if (isRunning && !hasWindow) {
             if (indicator) indicator.className = 'status-indicator running-bg';
-            if (statusText) statusText.textContent = 'Running in Background';
+            if (statusText) statusText.textContent = 'Running in Background (Notifications Active)';
             if (launchBtnText) launchBtnText.textContent = 'Open WhatsApp Window';
-            if (bgNotice) bgNotice.style.display = 'flex';
-            if (hideBtn) hideBtn.style.display = 'none';
-            if (stopBtn) stopBtn.style.display = 'inline-flex';
         } else {
             if (indicator) indicator.className = 'status-indicator';
             if (statusText) statusText.textContent = 'Ready to Launch';
-            if (launchBtnText) launchBtnText.textContent = 'Open WhatsApp Web';
-            if (bgNotice) bgNotice.style.display = 'none';
-            if (hideBtn) hideBtn.style.display = 'none';
-            if (stopBtn) stopBtn.style.display = 'none';
+            if (launchBtnText) launchBtnText.textContent = 'Open WhatsApp Window';
         }
     }
 
@@ -232,38 +220,6 @@ class WhatswebApp {
                             console.error('Failed to open profile:', err);
                             this.refreshStatuses();
                         });
-                    }
-                }
-            });
-        }
-
-        // Send to background button
-        const hideBtn = document.getElementById('hideWhatsappBtn');
-        if (hideBtn) {
-            hideBtn.addEventListener('click', () => {
-                if (this.activeProfileId) {
-                    const api = this.api;
-                    if (api && api.HideProfileWindow) {
-                        api.HideProfileWindow(this.activeProfileId).then(() => {
-                            this.refreshStatuses();
-                        }).catch(console.error);
-                    }
-                }
-            });
-        }
-
-        // Stop session button
-        const stopBtn = document.getElementById('stopWhatsappBtn');
-        if (stopBtn) {
-            stopBtn.addEventListener('click', () => {
-                if (this.activeProfileId) {
-                    if (confirm('Stop this WhatsApp background session? You will stop receiving notifications until you start it again.')) {
-                        const api = this.api;
-                        if (api && api.CloseProfile) {
-                            api.CloseProfile(this.activeProfileId).then(() => {
-                                this.refreshStatuses();
-                            }).catch(console.error);
-                        }
                     }
                 }
             });
@@ -370,28 +326,12 @@ class WhatswebApp {
         const currentStatus = this.profileStatuses[profile.id];
         this.updateDashboardState(currentStatus);
 
-        // Fetch fresh status and if not running, launch
+        // Open or bring WhatsApp window to front
         const api = this.api;
-        if (api) {
-            if (api.GetProfileStatus) {
-                api.GetProfileStatus(profile.id).then(status => {
-                    this.profileStatuses[profile.id] = status;
-                    this.updateAvatarBadge(status);
-                    this.updateDashboardState(status);
-
-                    // If not running at all, launch it
-                    const isRunning = status.isRunning !== undefined ? status.isRunning : status.IsRunning;
-                    if (!isRunning && api.OpenProfile) {
-                        const statusText = document.getElementById('dashboardStatusText');
-                        if (statusText) statusText.textContent = 'Launching WhatsApp Web...';
-                        api.OpenProfile(profile.id).then(() => {
-                            this.refreshStatuses();
-                        }).catch(console.error);
-                    }
-                }).catch(console.error);
-            } else if (api.OpenProfile) {
-                api.OpenProfile(profile.id).catch(console.error);
-            }
+        if (api && api.OpenProfile) {
+            api.OpenProfile(profile.id).then(() => {
+                this.refreshStatuses();
+            }).catch(console.error);
         }
     }
 

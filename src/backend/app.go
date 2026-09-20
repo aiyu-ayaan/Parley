@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
@@ -52,6 +53,7 @@ func NewApp(encryptionService *crypto.EncryptionService) *App {
 func (a *App) Startup(ctx context.Context) {
 	a.ctx = ctx
 	a.loadProfiles()
+	go a.launchAllProfilesInBackground()
 }
 
 // DomReady is called after the frontend DOM is ready
@@ -366,6 +368,76 @@ func (a *App) GetAllProfileStatuses() []ProfileStatus {
 	return statuses
 }
 
+// launchAllProfilesInBackground launches all saved profiles in the background on app startup
+func (a *App) launchAllProfilesInBackground() {
+	time.Sleep(500 * time.Millisecond)
+
+	a.mu.RLock()
+	profiles := make([]*Profile, 0, len(a.profiles))
+	for _, p := range a.profiles {
+		profiles = append(profiles, p)
+	}
+	a.mu.RUnlock()
+
+	for _, p := range profiles {
+		if a.IsProfileRunning(p.ID) {
+			continue
+		}
+		sessionDir := filepath.Join(a.encryptionService.DataDir(), "sessions", p.ID)
+		_ = os.MkdirAll(sessionDir, 0700)
+		_ = ensureSessionPreferences(sessionDir)
+		_, _ = ensureBackgroundKeeperExtension(sessionDir)
+
+		targetURL := p.URL
+		if targetURL == "" {
+			targetURL = "https://web.whatsapp.com"
+		}
+
+		cmd, err := createWebviewCommand(p.ID, p.Name, targetURL, sessionDir)
+		if err == nil && cmd != nil {
+			if err := cmd.Start(); err == nil {
+				a.procMu.Lock()
+				a.runningProcesses[p.ID] = cmd
+				a.procMu.Unlock()
+
+				go func(id string, c *exec.Cmd) {
+					// Wait briefly for initial window to spawn, then push silently to background
+					time.Sleep(1500 * time.Millisecond)
+					silentlyUnmapProfileWindow(id)
+
+					_ = c.Wait()
+					a.procMu.Lock()
+					delete(a.runningProcesses, id)
+					a.procMu.Unlock()
+					if a.ctx != nil {
+						runtime.EventsEmit(a.ctx, "profile:status-changed", a.GetProfileStatus(id))
+					}
+				}(p.ID, cmd)
+			}
+		}
+	}
+
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "profiles:status-synced", nil)
+	}
+}
+
+// silentlyUnmapProfileWindow unmaps/hides the profile window from desktop so it runs in background
+func silentlyUnmapProfileWindow(id string) {
+	targetClass := fmt.Sprintf("whatsweb-%s", id)
+	if _, err := exec.LookPath("xdotool"); err == nil {
+		out, err := exec.Command("xdotool", "search", "--classname", targetClass).Output()
+		if err == nil {
+			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+				wid := strings.TrimSpace(line)
+				if wid != "" {
+					_ = exec.Command("xdotool", "windowunmap", wid).Run()
+				}
+			}
+		}
+	}
+}
+
 // launchProfileWebview spawns or restores a dedicated webview window for the profile
 func (a *App) launchProfileWebview(id string) error {
 	a.mu.RLock()
@@ -383,6 +455,9 @@ func (a *App) launchProfileWebview(id string) error {
 	// Configure background mode and desktop notification permissions in preferences
 	if err := ensureSessionPreferences(sessionDir); err != nil {
 		log.Printf("Warning: failed to configure session preferences: %v", err)
+	}
+	if _, err := ensureBackgroundKeeperExtension(sessionDir); err != nil {
+		log.Printf("Warning: failed to ensure background keeper extension: %v", err)
 	}
 
 	// 1. If window is already open and visible, bring it to front
@@ -406,7 +481,7 @@ func (a *App) launchProfileWebview(id string) error {
 		log.Printf("Profile %s background process is running (PID %d), triggering window reopen", id, pid)
 		restoreCmd, err := createWebviewCommand(id, profile.Name, targetURL, sessionDir)
 		if err == nil {
-			_ = restoreCmd.Run()
+			_ = restoreCmd.Start()
 			if a.ctx != nil {
 				runtime.EventsEmit(a.ctx, "profile:status-changed", a.GetProfileStatus(id))
 			}
@@ -443,6 +518,34 @@ func (a *App) launchProfileWebview(id string) error {
 	}
 
 	return nil
+}
+
+// ensureBackgroundKeeperExtension generates a Chrome extension that keeps background service workers alive
+func ensureBackgroundKeeperExtension(sessionDir string) (string, error) {
+	extDir := filepath.Join(sessionDir, "keeper_ext")
+	if err := os.MkdirAll(extDir, 0700); err != nil {
+		return "", err
+	}
+
+	manifestPath := filepath.Join(extDir, "manifest.json")
+	manifestContent := `{
+  "name": "Whatsweb Background Keeper",
+  "version": "1.0",
+  "manifest_version": 3,
+  "background": {
+    "service_worker": "bg.js"
+  },
+  "permissions": [
+    "background"
+  ]
+}`
+	_ = os.WriteFile(manifestPath, []byte(manifestContent), 0600)
+
+	bgPath := filepath.Join(extDir, "bg.js")
+	bgContent := `console.log("Whatsweb background keeper service worker active");`
+	_ = os.WriteFile(bgPath, []byte(bgContent), 0600)
+
+	return extDir, nil
 }
 
 // ensureSessionPreferences ensures Chrome profile has background_mode and notifications enabled
@@ -554,6 +657,19 @@ func isProfileWindowVisible(id string) bool {
 func focusProfileWindow(id string) bool {
 	targetClass := fmt.Sprintf("whatsweb-%s", id)
 
+	// If unmapped, map it back to desktop first
+	if _, err := exec.LookPath("xdotool"); err == nil {
+		out, err := exec.Command("xdotool", "search", "--classname", targetClass).Output()
+		if err == nil {
+			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+				wid := strings.TrimSpace(line)
+				if wid != "" {
+					_ = exec.Command("xdotool", "windowmap", wid).Run()
+				}
+			}
+		}
+	}
+
 	if _, err := exec.LookPath("wmctrl"); err == nil {
 		cmd := exec.Command("wmctrl", "-x", "-a", targetClass)
 		if err := cmd.Run(); err == nil {
@@ -573,6 +689,8 @@ func focusProfileWindow(id string) bool {
 
 // createWebviewCommand creates the command to run the webview with background mode enabled
 func createWebviewCommand(id, name, targetURL, sessionDir string) (*exec.Cmd, error) {
+	extDir, _ := ensureBackgroundKeeperExtension(sessionDir)
+
 	browsers := []string{
 		"google-chrome",
 		"google-chrome-stable",
@@ -593,6 +711,9 @@ func createWebviewCommand(id, name, targetURL, sessionDir string) (*exec.Cmd, er
 				"--no-first-run",
 				"--no-default-browser-check",
 				"--password-store=basic",
+			}
+			if extDir != "" {
+				args = append(args, fmt.Sprintf("--load-extension=%s", extDir))
 			}
 			return exec.Command(path, args...), nil
 		}
