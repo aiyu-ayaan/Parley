@@ -36,6 +36,8 @@ type App struct {
 	profiles          map[string]*Profile
 	activeProfile     string
 	runningProcesses  map[string]*exec.Cmd
+	stoppedSessions   map[string]bool // sessions intentionally stopped (won't auto-restart)
+	shuttingDown      bool            // true when app is shutting down (no auto-restart)
 	procMu            sync.Mutex
 	mu                sync.RWMutex
 }
@@ -46,6 +48,7 @@ func NewApp(encryptionService *crypto.EncryptionService) *App {
 		encryptionService: encryptionService,
 		profiles:          make(map[string]*Profile),
 		runningProcesses:  make(map[string]*exec.Cmd),
+		stoppedSessions:   make(map[string]bool),
 	}
 }
 
@@ -69,6 +72,9 @@ func (a *App) BeforeClose(ctx context.Context) bool {
 
 // Shutdown is called when the app is shutting down
 func (a *App) Shutdown(ctx context.Context) {
+	a.procMu.Lock()
+	a.shuttingDown = true
+	a.procMu.Unlock()
 	a.saveProfiles()
 }
 
@@ -269,6 +275,7 @@ func (a *App) HideProfileWindow(id string) error {
 // CloseProfile closes a profile's webview process completely
 func (a *App) CloseProfile(id string) error {
 	a.procMu.Lock()
+	a.stoppedSessions[id] = true // Mark as intentionally stopped — no auto-restart
 	if cmd, running := a.runningProcesses[id]; running && cmd != nil && cmd.Process != nil {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		delete(a.runningProcesses, id)
@@ -383,42 +390,121 @@ func (a *App) launchAllProfilesInBackground() {
 		if a.IsProfileRunning(p.ID) {
 			continue
 		}
-		sessionDir := filepath.Join(a.encryptionService.DataDir(), "sessions", p.ID)
-		_ = os.MkdirAll(sessionDir, 0700)
-		_ = ensureSessionPreferences(sessionDir)
-		_, _ = ensureBackgroundKeeperExtension(sessionDir)
-
-		targetURL := p.URL
-		if targetURL == "" {
-			targetURL = "https://web.whatsapp.com"
-		}
-
-		cmd, err := createWebviewCommand(p.ID, p.Name, targetURL, sessionDir)
-		if err == nil && cmd != nil {
-			if err := cmd.Start(); err == nil {
-				a.procMu.Lock()
-				a.runningProcesses[p.ID] = cmd
-				a.procMu.Unlock()
-
-				go func(id string, c *exec.Cmd) {
-					// Wait briefly for initial window to spawn, then push silently to background
-					time.Sleep(1500 * time.Millisecond)
-					silentlyUnmapProfileWindow(id)
-
-					_ = c.Wait()
-					a.procMu.Lock()
-					delete(a.runningProcesses, id)
-					a.procMu.Unlock()
-					if a.ctx != nil {
-						runtime.EventsEmit(a.ctx, "profile:status-changed", a.GetProfileStatus(id))
-					}
-				}(p.ID, cmd)
-			}
-		}
+		a.startSessionWithAutoRestart(p.ID, true)
 	}
 
 	if a.ctx != nil {
 		runtime.EventsEmit(a.ctx, "profiles:status-synced", nil)
+	}
+}
+
+// startSessionWithAutoRestart launches a Chrome session and automatically relaunches it
+// in the background if the user closes the window. This keeps the WhatsApp Web session
+// alive so notifications continue to arrive.
+// If hideOnLaunch is true, the window is immediately hidden after spawning.
+func (a *App) startSessionWithAutoRestart(id string, hideOnLaunch bool) {
+	a.mu.RLock()
+	profile, exists := a.profiles[id]
+	a.mu.RUnlock()
+	if !exists {
+		return
+	}
+
+	sessionDir := filepath.Join(a.encryptionService.DataDir(), "sessions", id)
+	_ = os.MkdirAll(sessionDir, 0700)
+	_ = ensureSessionPreferences(sessionDir)
+	_, _ = ensureBackgroundKeeperExtension(sessionDir)
+
+	// Clean up stale singleton locks from previous crashes
+	cleanStaleSingletonLock(sessionDir)
+
+	targetURL := profile.URL
+	if targetURL == "" {
+		targetURL = "https://web.whatsapp.com"
+	}
+
+	// Clear the stopped flag — this session is now active
+	a.procMu.Lock()
+	delete(a.stoppedSessions, id)
+	a.procMu.Unlock()
+
+	cmd, err := createWebviewCommand(id, profile.Name, targetURL, sessionDir)
+	if err != nil || cmd == nil {
+		log.Printf("Failed to create webview command for %s: %v", id, err)
+		return
+	}
+
+	// Detach Chrome from parent process group so it survives if Whatsweb exits
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	if err := cmd.Start(); err != nil {
+		log.Printf("Failed to start session for %s: %v", id, err)
+		return
+	}
+
+	a.procMu.Lock()
+	a.runningProcesses[id] = cmd
+	a.procMu.Unlock()
+
+	go func(profileID string, c *exec.Cmd) {
+		if hideOnLaunch {
+			// Wait for window to spawn, then hide it
+			time.Sleep(1500 * time.Millisecond)
+			silentlyUnmapProfileWindow(profileID)
+		}
+
+		// Wait for Chrome to exit
+		_ = c.Wait()
+
+		a.procMu.Lock()
+		delete(a.runningProcesses, profileID)
+		stopped := a.stoppedSessions[profileID]
+		isShuttingDown := a.shuttingDown
+		a.procMu.Unlock()
+
+		if a.ctx != nil {
+			runtime.EventsEmit(a.ctx, "profile:status-changed", a.GetProfileStatus(profileID))
+		}
+
+		// Auto-restart: if session wasn't intentionally stopped and app isn't shutting down,
+		// relaunch Chrome in background so WhatsApp session stays alive
+		if !stopped && !isShuttingDown {
+			log.Printf("Session %s exited (user closed window), auto-restarting in background...", profileID)
+			// Clean stale lock before restart
+			cleanStaleSingletonLock(sessionDir)
+			time.Sleep(500 * time.Millisecond)
+			a.startSessionWithAutoRestart(profileID, true) // relaunch hidden
+		}
+	}(id, cmd)
+
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "profile:status-changed", a.GetProfileStatus(id))
+	}
+}
+
+// cleanStaleSingletonLock removes Chrome's SingletonLock/Socket/Cookie files if the
+// process that owned them is no longer running. Stale locks prevent Chrome from launching.
+func cleanStaleSingletonLock(sessionDir string) {
+	lockPath := filepath.Join(sessionDir, "SingletonLock")
+	target, err := os.Readlink(lockPath)
+	if err != nil {
+		return // No lock file
+	}
+
+	// Lock format: "hostname-pid"
+	parts := strings.Split(target, "-")
+	if len(parts) >= 2 {
+		pidStr := parts[len(parts)-1]
+		if pid, err := strconv.Atoi(pidStr); err == nil && pid > 0 {
+			// Check if the process is still alive
+			if err := syscall.Kill(pid, 0); err != nil {
+				// Process is dead — remove stale locks
+				log.Printf("Removing stale Chrome lock (PID %d is dead) in %s", pid, sessionDir)
+				_ = os.Remove(filepath.Join(sessionDir, "SingletonLock"))
+				_ = os.Remove(filepath.Join(sessionDir, "SingletonSocket"))
+				_ = os.Remove(filepath.Join(sessionDir, "SingletonCookie"))
+			}
+		}
 	}
 }
 
@@ -481,6 +567,7 @@ func (a *App) launchProfileWebview(id string) error {
 		log.Printf("Profile %s background process is running (PID %d), triggering window reopen", id, pid)
 		restoreCmd, err := createWebviewCommand(id, profile.Name, targetURL, sessionDir)
 		if err == nil {
+			restoreCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 			_ = restoreCmd.Start()
 			if a.ctx != nil {
 				runtime.EventsEmit(a.ctx, "profile:status-changed", a.GetProfileStatus(id))
@@ -489,34 +576,8 @@ func (a *App) launchProfileWebview(id string) error {
 		}
 	}
 
-	// 3. Not running, launch fresh process with background mode enabled
-	cmd, err := createWebviewCommand(id, profile.Name, targetURL, sessionDir)
-	if err != nil {
-		return err
-	}
-
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start webview: %w", err)
-	}
-
-	a.procMu.Lock()
-	a.runningProcesses[id] = cmd
-	a.procMu.Unlock()
-
-	go func() {
-		_ = cmd.Wait()
-		a.procMu.Lock()
-		delete(a.runningProcesses, id)
-		a.procMu.Unlock()
-		if a.ctx != nil {
-			runtime.EventsEmit(a.ctx, "profile:status-changed", a.GetProfileStatus(id))
-		}
-	}()
-
-	if a.ctx != nil {
-		runtime.EventsEmit(a.ctx, "profile:status-changed", a.GetProfileStatus(id))
-	}
-
+	// 3. Not running — launch fresh with auto-restart (visible window, not hidden)
+	a.startSessionWithAutoRestart(id, false)
 	return nil
 }
 
