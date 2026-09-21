@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -131,6 +132,8 @@ func (a *App) launch(id string, window bool) (*exec.Cmd, error) {
 	if err := ensureSessionPreferences(dir); err != nil {
 		log.Printf("session %s: preferences: %v", id, err)
 	}
+
+	evictStale(dir)
 
 	chrome, err := findChrome()
 	if err != nil {
@@ -322,6 +325,32 @@ func (a *App) desktopNotify(id, title, body string) {
 	}
 	if strings.TrimSpace(string(out)) == "default" {
 		_ = a.OpenProfile(id)
+	}
+}
+
+// evictStale stops a leftover Chrome (e.g. from an older Whatsweb run) that still owns
+// the session dir. Otherwise Chrome's singleton handoff swallows our launch and opens a
+// window in the old process on every retry.
+func evictStale(dir string) {
+	target, err := os.Readlink(filepath.Join(dir, "SingletonLock"))
+	if err != nil {
+		return
+	}
+	pid, err := strconv.Atoi(target[strings.LastIndex(target, "-")+1:])
+	if err != nil || pid <= 0 {
+		return
+	}
+	// Only touch it if that PID really is a Chrome on this session dir (PIDs get reused).
+	cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	// Chrome rewrites its argv space-separated, so accept either separator.
+	arg := "--user-data-dir=" + dir
+	if err != nil || !(strings.Contains(string(cmdline), arg+" ") || strings.Contains(string(cmdline), arg+"\x00")) {
+		return
+	}
+	log.Printf("stopping leftover chrome %d on %s", pid, dir)
+	_ = syscall.Kill(pid, syscall.SIGTERM)
+	for i := 0; i < 50 && syscall.Kill(pid, 0) == nil; i++ {
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 
