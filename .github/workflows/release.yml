@@ -13,8 +13,8 @@
 #
 #   1. A marker on master opens (or updates) ONE release PR on `chore/release`.
 #      It bumps info.productVersion in wails.json and writes the CHANGELOG entry
-#      from every commit since the last tag. Nothing is built. Later pushes
-#      update the same PR, so it always shows what the next release contains.
+#      from every commit since the last tag. Nothing is built. Only a push that
+#      carries a marker opens or updates the PR; plain commits leave it alone.
 #
 #   2. Merging that PR is the release: the Linux binary is built, then the tag
 #      and the GitHub Release are created last, so a failed build publishes
@@ -122,16 +122,21 @@ jobs:
 
       - run: go test ./scripts/release
 
-      # Every commit since the last release, not just this push: a marker pushed
-      # yesterday and a fix pushed today both belong in the one pending release.
-      - name: Collect unreleased commit subjects
+      # Only THIS push decides whether to release: a normal commit after an
+      # earlier marker must not open or update the release PR.
+      - name: Collect pushed commit subjects
         env:
           EVENT: ${{ github.event_name }}
           MARKER: ${{ inputs.marker }}
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
-          last="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
-          git log ${last:+"$last..HEAD"} --format=%s > subjects.txt
-          [ "$EVENT" = workflow_dispatch ] && echo "!$MARKER : manual release" >> subjects.txt
+          if [ "$EVENT" = workflow_dispatch ]; then
+            echo "!$MARKER : manual release" > subjects.txt
+          elif git cat-file -e "$BEFORE_SHA^{commit}" 2>/dev/null; then
+            git log "$BEFORE_SHA..HEAD" --format=%s > subjects.txt
+          else
+            git log -1 --format=%s > subjects.txt
+          fi
           cat subjects.txt
 
       - name: Next version
@@ -140,6 +145,13 @@ jobs:
           go run ./scripts/release next \
             --current "$(jq -r .info.productVersion wails.json)" \
             --subjects-file subjects.txt | tee -a "$GITHUB_OUTPUT"
+
+      # The CHANGELOG still covers every commit since the last release.
+      - name: Collect unreleased commit subjects
+        if: steps.next.outputs.release == 'true'
+        run: |
+          last="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+          git log ${last:+"$last..HEAD"} --format=%s > subjects.txt
 
       - name: Bump version and write the CHANGELOG entry
         if: steps.next.outputs.release == 'true'
