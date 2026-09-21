@@ -196,7 +196,8 @@ func (a *App) launch(id string, s *session) (*exec.Cmd, error) {
 		// Commands on fd 3, replies on fd 4. No TCP port, so no other local process
 		// can drive the session.
 		"--remote-debugging-pipe",
-		"--app=about:blank",
+		// A real URL: Chrome opens --app=about:blank as a normal tabbed window.
+		"--app=" + url,
 		"--class=" + windowClass(id),
 		"--window-size=1100,800",
 	}
@@ -239,7 +240,7 @@ func (a *App) launch(id string, s *session) (*exec.Cmd, error) {
 		outR.Close()
 	}()
 	go func() {
-		pg, err := setupPage(c, url)
+		pg, err := setupPage(c)
 		if err != nil {
 			log.Printf("session %s: page setup: %v", id, err)
 			killGroup(cmd)
@@ -278,9 +279,9 @@ func (a *App) onEvent(id string) func(cdpMsg) {
 	}
 }
 
-// setupPage takes the app window's blank tab, installs the notification hook and
-// opens WhatsApp in it.
-func setupPage(c *cdp, url string) (*page, error) {
+// setupPage takes the app window's tab, installs the hooks and reloads so they apply
+// from the first script WhatsApp runs.
+func setupPage(c *cdp) (*page, error) {
 	var target string
 	for i := 0; target == "" && i < 50; i++ {
 		var r struct {
@@ -320,7 +321,8 @@ func setupPage(c *cdp, url string) (*page, error) {
 		{"Runtime.enable", nil},
 		{"Page.enable", nil},
 		{"Page.addScriptToEvaluateOnNewDocument", map[string]any{"source": notifyHook}},
-		{"Page.navigate", map[string]any{"url": url}},
+		{"Page.addScriptToEvaluateOnNewDocument", map[string]any{"source": "window.__parleyHidden = true"}},
+		{"Page.reload", nil},
 	} {
 		if err := c.call(sid, st.method, st.params, nil); err != nil {
 			return nil, err

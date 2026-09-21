@@ -25,6 +25,17 @@ func vis(t *testing.T, a *App, id string) string {
 	return r.Result.Value
 }
 
+func roles(id string) string {
+	out, _ := exec.Command("xdotool", "search", "--class", windowClass(id)).Output()
+	var r []string
+	for _, w := range strings.Fields(string(out)) {
+		if b, err := exec.Command("xprop", "-id", w, "WM_WINDOW_ROLE").Output(); err == nil && strings.Contains(string(b), "\"") {
+			r = append(r, strings.Split(string(b), "\"")[1])
+		}
+	}
+	return strings.Join(r, ",")
+}
+
 func mapped(id string) int {
 	out, _ := exec.Command("xdotool", "search", "--onlyvisible", "--class", windowClass(id)).Output()
 	return len(strings.Fields(string(out)))
@@ -69,7 +80,10 @@ func TestLiveWindow(t *testing.T) {
 	}
 	t.Logf("open took %s", time.Since(t0))
 	time.Sleep(500 * time.Millisecond)
-	t.Logf("shown: %s, mapped=%d, status=%+v", vis(t, a, p.ID), mapped(p.ID), a.GetProfileStatus(p.ID))
+	t.Logf("shown: %s, mapped=%d, role=%s, status=%+v", vis(t, a, p.ID), mapped(p.ID), roles(p.ID), a.GetProfileStatus(p.ID))
+	if r := roles(p.ID); r != "pop-up" {
+		t.Errorf("window role %q, want a bare app window (pop-up)", r)
+	}
 
 	a.HideProfileWindow(p.ID)
 	time.Sleep(500 * time.Millisecond)
