@@ -9,6 +9,7 @@ import (
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/options/linux"
 
 	"parley/src/backend"
 	"parley/src/crypto"
@@ -16,6 +17,9 @@ import (
 
 //go:embed all:frontend/dist
 var assets embed.FS
+
+//go:embed appicon.png
+var icon []byte
 
 // App struct binds App in the main package for Wails
 type App struct {
@@ -50,6 +54,7 @@ func main() {
 			UniqueId:               "com.parley.app",
 			OnSecondInstanceLaunch: func(options.SecondInstanceData) { backendApp.ShowWindow() },
 		},
+		Linux:      &linux.Options{Icon: icon},
 		OnStartup:  backendApp.Startup,
 		OnDomReady: backendApp.DomReady,
 		OnShutdown: backendApp.Shutdown,

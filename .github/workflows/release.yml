@@ -68,8 +68,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Only a release PR moves the version, so a changed version is the answer
-      # whichever way the PR was merged (merge, squash or rebase).
+      # A release PR's commit subject (kept by merge, squash and rebase alike)
+      # plus a changed version means a release PR just landed.
       - id: detect
         env:
           EVENT: ${{ github.event_name }}
@@ -85,7 +85,12 @@ jobs:
             git cat-file -e "$base^{commit}" 2>/dev/null || base="HEAD^"
             previous="$(git show "$base:wails.json" 2>/dev/null | jq -r .info.productVersion || true)"
             echo "version: ${previous:-<none>} -> $current"
-            [ -n "$previous" ] && [ "$previous" != "$current" ] && release=true
+            # A version change alone is not enough (a first push of this workflow
+            # spans older versions): the range must carry the release PR's commit.
+            if [ -n "$previous" ] && [ "$previous" != "$current" ] &&
+               git log "$base..HEAD" --format=%s | grep -qE "^chore\(release\) : v${current//./\\.}( |\$)"; then
+              release=true
+            fi
           fi
           if [ "$release" = true ] && git rev-parse -q --verify "refs/tags/v$current" >/dev/null; then
             echo "::error::v$current is already released."
