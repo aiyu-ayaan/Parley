@@ -86,11 +86,12 @@ PKG_CONFIG_PATH=./pkgconfig:$PKG_CONFIG_PATH ~/go/bin/wails dev
 ./build/bin/parley
 ```
 
-Or install system-wide:
+Or install it (binary, icon and app-menu entry under `~/.local`, no sudo):
 ```bash
-sudo cp build/bin/parley /usr/local/bin/
-parley
+./install.sh              # builds first if build/bin/parley is missing
+./install.sh --uninstall  # profiles in ~/.parley are kept
 ```
+Release tarballs ship the same `install.sh`.
 
 ## Usage
 

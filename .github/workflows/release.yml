@@ -211,8 +211,9 @@ jobs:
         env:
           VERSION: ${{ needs.merged.outputs.version }}
         run: |
-          mkdir dist
-          tar -czf "dist/parley-${VERSION}-linux-amd64.tar.gz" -C build/bin parley
+          mkdir -p dist pkg
+          cp build/bin/parley appicon.png install.sh pkg/
+          tar -czf "dist/parley-${VERSION}-linux-amd64.tar.gz" -C pkg .
 
       - uses: actions/upload-artifact@v4
         with:
@@ -263,8 +264,7 @@ jobs:
             Needs `libwebkit2gtk-4.1-0`, `libnotify-bin` and a Chromium-based browser.
 
             ```bash
-            tar -xzf parley-${{ needs.merged.outputs.version }}-linux-amd64.tar.gz
-            sudo install parley /usr/local/bin/
-            parley
+            mkdir parley && tar -xzf parley-${{ needs.merged.outputs.version }}-linux-amd64.tar.gz -C parley
+            ./parley/install.sh    # binary, icon and app-menu entry under ~/.local
             ```
           files: dist/*
