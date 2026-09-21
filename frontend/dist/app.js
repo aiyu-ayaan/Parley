@@ -1,576 +1,177 @@
-// Whatsweb Frontend Application
+// Whatsweb dashboard
 
-// Ensure compatibility between window.go.main and window.go.backend
-function getBackendApp() {
-    if (typeof window !== 'undefined' && window.go) {
-        if (window.go.main && window.go.main.App) {
-            if (!window.go.backend) window.go.backend = {};
-            window.go.backend.App = window.go.main.App;
-            return window.go.main.App;
-        }
-        if (window.go.backend && window.go.backend.App) {
-            if (!window.go.main) window.go.main = {};
-            window.go.main.App = window.go.backend.App;
-            return window.go.backend.App;
-        }
-    }
-    return null;
+const $ = (id) => document.getElementById(id);
+const api = () => window.go && window.go.backend && window.go.backend.App;
+
+const state = {
+    profiles: [],
+    status: {},      // id -> {isRunning, hasWindow}
+    selected: null,  // profile id, or 'settings'
+};
+
+const COLORS = ['#00a884', '#53bdeb', '#a970ff', '#f7a541', '#e26ab6', '#06cf9c', '#ff7a6b', '#6b8afd'];
+
+function colorFor(id) {
+    let h = 0;
+    for (const c of id) h = (h * 31 + c.charCodeAt(0)) | 0;
+    return COLORS[Math.abs(h) % COLORS.length];
 }
 
-// Wait for backend bindings to be available
-async function waitForBackend(timeoutMs = 3000) {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-        const app = getBackendApp();
-        if (app && app.CreateProfile) {
-            return app;
-        }
-        await new Promise(resolve => setTimeout(resolve, 50));
-    }
-    return getBackendApp();
+function initials(name) {
+    return name.trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase() || '?';
 }
 
-class WhatswebApp {
-    constructor() {
-        this.profiles = [];
-        this.profileStatuses = {};
-        this.activeProfileId = null;
-        this.webview = null;
-        this.statusInterval = null;
+function mode(id) {
+    const s = state.status[id];
+    if (!s || !s.isRunning) return 'stopped';
+    return s.hasWindow ? 'window' : 'background';
+}
 
-        // Bind events immediately so UI is always responsive
-        this.bindEvents();
-        this.init();
+const MODE_TEXT = {
+    window: ['Window open', 'WhatsApp is open in its own window.'],
+    background: ['Background', 'Running headless. Message and call notifications are on.'],
+    stopped: ['Stopped', 'Not running. You won\'t get notifications for this account.'],
+};
+
+function renderRail() {
+    const list = $('profileList');
+    list.replaceChildren(...state.profiles.map((p) => {
+        const b = document.createElement('button');
+        b.className = 'orb' + (state.selected === p.id ? ' selected' : '');
+        b.style.background = colorFor(p.id);
+        b.title = `${p.name} · ${MODE_TEXT[mode(p.id)][0]}`;
+        b.setAttribute('aria-label', b.title);
+        b.textContent = initials(p.name);
+        b.onclick = () => select(p.id);
+        b.ondblclick = () => api().OpenProfile(p.id);
+        const dot = document.createElement('span');
+        dot.className = 'dot ' + mode(p.id);
+        b.append(dot);
+        return b;
+    }));
+    $('homeBtn').classList.toggle('selected', state.selected === 'settings');
+}
+
+function renderMain() {
+    const settings = state.selected === 'settings';
+    const p = state.profiles.find((x) => x.id === state.selected);
+    $('settingsView').hidden = !settings;
+    $('profileView').hidden = !p;
+    $('emptyView').hidden = settings || !!p;
+    if (!p) return;
+
+    const m = mode(p.id);
+    $('barName').textContent = p.name;
+    $('statusChip').textContent = MODE_TEXT[m][0];
+    $('statusChip').className = 'chip ' + m;
+    $('statusText').textContent = MODE_TEXT[m][1];
+
+    const av = $('heroAvatar');
+    av.textContent = initials(p.name);
+    av.style.background = colorFor(p.id);
+    if (document.activeElement !== $('nameInput')) $('nameInput').value = p.name;
+
+    $('openBtn').textContent = m === 'window' ? 'Focus window' : 'Open WhatsApp';
+    $('bgBtn').hidden = m !== 'window';
+    $('powerBtn').textContent = m === 'stopped' ? 'Start in background' : 'Stop';
+    resetDelete();
+}
+
+function render() {
+    renderRail();
+    renderMain();
+}
+
+function select(id) {
+    state.selected = id;
+    render();
+}
+
+async function loadProfiles() {
+    const list = (await api().GetProfiles()) || [];
+    state.profiles = list.sort((a, b) => a.name.localeCompare(b.name));
+    if (state.selected !== 'settings' && !state.profiles.some((p) => p.id === state.selected)) {
+        state.selected = state.profiles.length ? state.profiles[0].id : null;
     }
+}
 
-    get api() {
-        return getBackendApp();
-    }
+async function loadStatuses() {
+    for (const s of (await api().GetAllProfileStatuses()) || []) state.status[s.id] = s;
+}
 
-    async init() {
-        const app = await waitForBackend(3000);
-        if (app) {
-            await this.loadProfiles();
-            this.renderProfiles();
-            await this.refreshStatuses();
-            this.startStatusPolling();
-            this.listenToBackendEvents();
-        } else {
-            // Keep retrying in background if startup was slow
-            setTimeout(() => this.init(), 500);
-        }
-    }
+async function refresh() {
+    await loadProfiles();
+    await loadStatuses();
+    render();
+}
 
-    listenToBackendEvents() {
-        if (typeof window !== 'undefined' && window.runtime && window.runtime.EventsOn) {
-            window.runtime.EventsOn('profile:status-changed', (status) => {
-                if (status && (status.id || status.ID)) {
-                    const id = status.id || status.ID;
-                    this.profileStatuses[id] = status;
-                    this.updateAvatarBadge(status);
-                    if (this.activeProfileId === id) {
-                        this.updateDashboardState(status);
-                    }
-                } else {
-                    this.refreshStatuses();
-                }
-            });
-            window.runtime.EventsOn('profiles:updated', () => {
-                this.loadProfiles().then(() => {
-                    this.renderProfiles();
-                    this.refreshStatuses();
-                });
-            });
-        }
-    }
+// Delete asks for a second click instead of a blocking confirm().
+function resetDelete() {
+    const b = $('deleteBtn');
+    b.classList.remove('confirm');
+    b.textContent = 'Remove account';
+}
 
-    startStatusPolling() {
-        if (this.statusInterval) clearInterval(this.statusInterval);
-        this.statusInterval = setInterval(() => {
-            this.refreshStatuses();
-        }, 2000);
-    }
+function bind() {
+    const current = () => state.selected;
 
-    async refreshStatuses() {
-        const api = this.api;
-        if (!api) return;
-        try {
-            if (api.GetAllProfileStatuses) {
-                const statuses = await api.GetAllProfileStatuses();
-                if (Array.isArray(statuses)) {
-                    statuses.forEach(s => {
-                        const id = s.id || s.ID;
-                        this.profileStatuses[id] = s;
-                        this.updateAvatarBadge(s);
-                    });
-                    if (this.activeProfileId) {
-                        const activeStatus = this.profileStatuses[this.activeProfileId];
-                        if (activeStatus) {
-                            this.updateDashboardState(activeStatus);
-                        }
-                    }
-                }
-            }
-        } catch (e) {
-            console.error('Failed to refresh statuses:', e);
-        }
-    }
+    $('homeBtn').onclick = () => select('settings');
+    $('addBtn').onclick = $('emptyAddBtn').onclick = () => {
+        $('addName').value = '';
+        $('addDialog').showModal();
+    };
+    $('addDialog').addEventListener('close', async () => {
+        const name = $('addName').value.trim();
+        if ($('addDialog').returnValue !== 'ok' || !name) return;
+        const p = await api().CreateProfile(name);
+        state.selected = p.id;
+        await refresh();
+        await api().OpenProfile(p.id);
+    });
 
-    updateAvatarBadge(status) {
-        const id = status.id || status.ID;
-        const badge = document.getElementById(`badge-${id}`);
-        if (!badge) return;
+    $('openBtn').onclick = () => api().OpenProfile(current());
+    $('bgBtn').onclick = () => api().HideProfileWindow(current());
+    $('powerBtn').onclick = () => (mode(current()) === 'stopped' ? api().StartProfile(current()) : api().CloseProfile(current()));
 
-        const isRunning = status.isRunning !== undefined ? status.isRunning : status.IsRunning;
-        const hasWindow = status.hasWindow !== undefined ? status.hasWindow : status.HasWindow;
+    $('nameInput').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') e.target.blur();
+        if (e.key === 'Escape') { e.target.value = ''; e.target.blur(); }
+    });
+    $('nameInput').addEventListener('blur', async (e) => {
+        const p = state.profiles.find((x) => x.id === current());
+        const name = e.target.value.trim();
+        if (!p || !name || name === p.name) { renderMain(); return; }
+        await api().UpdateProfile({ ...p, name });
+    });
 
-        if (isRunning) {
-            badge.className = 'profile-badge ' + (hasWindow ? 'active-window' : 'running-bg');
-            badge.title = hasWindow ? 'Window Active' : 'Running in Background (Notifications Active)';
-        } else {
-            badge.className = 'profile-badge';
-            badge.title = 'Offline';
-        }
-    }
-
-    updateDashboardState(status) {
-        const indicator = document.getElementById('dashboardStatusIndicator');
-        const statusText = document.getElementById('dashboardStatusText');
-        const launchBtnText = document.getElementById('launchBtnText');
-
-        const isRunning = status ? (status.isRunning !== undefined ? status.isRunning : status.IsRunning) : false;
-        const hasWindow = status ? (status.hasWindow !== undefined ? status.hasWindow : status.HasWindow) : false;
-
-        if (isRunning && hasWindow) {
-            if (indicator) indicator.className = 'status-indicator active-window';
-            if (statusText) statusText.textContent = 'Window Open';
-            if (launchBtnText) launchBtnText.textContent = 'Bring Window to Front';
-        } else if (isRunning && !hasWindow) {
-            if (indicator) indicator.className = 'status-indicator running-bg';
-            if (statusText) statusText.textContent = 'Running in Background (Notifications Active)';
-            if (launchBtnText) launchBtnText.textContent = 'Open WhatsApp Window';
-        } else {
-            if (indicator) indicator.className = 'status-indicator';
-            if (statusText) statusText.textContent = 'Ready to Launch';
-            if (launchBtnText) launchBtnText.textContent = 'Open WhatsApp Window';
-        }
-    }
-
-    bindEvents() {
-        // Add profile buttons
-        const addBtn = document.getElementById('addProfileBtn');
-        if (addBtn) {
-            addBtn.addEventListener('click', () => this.openModal());
-        }
-
-        const welcomeBtn = document.getElementById('welcomeAddBtn');
-        if (welcomeBtn) {
-            welcomeBtn.addEventListener('click', () => this.openModal());
-        }
-
-        // Modal events
-        const modalClose = document.getElementById('modalClose');
-        if (modalClose) {
-            modalClose.addEventListener('click', () => this.closeModal());
-        }
-
-        const cancelBtn = document.getElementById('cancelBtn');
-        if (cancelBtn) {
-            cancelBtn.addEventListener('click', () => this.closeModal());
-        }
-
-        const modalOverlay = document.getElementById('modalOverlay');
-        if (modalOverlay) {
-            modalOverlay.addEventListener('click', (e) => {
-                if (e.target === modalOverlay) {
-                    this.closeModal();
-                }
-            });
-        }
-
-        // Form submission and Create Profile button
-        const form = document.getElementById('addProfileForm');
-        if (form) {
-            form.addEventListener('submit', (e) => this.handleCreateProfile(e));
-        }
-
-        const submitBtn = document.getElementById('createProfileSubmitBtn');
-        if (submitBtn) {
-            submitBtn.addEventListener('click', (e) => {
-                if (form && !form.checkValidity()) {
-                    form.reportValidity();
-                    return;
-                }
-                this.handleCreateProfile(e);
-            });
-        }
-
-        // Launch / Bring to front WhatsApp Web button
-        const launchBtn = document.getElementById('launchWhatsappBtn');
-        if (launchBtn) {
-            launchBtn.addEventListener('click', () => {
-                if (this.activeProfileId) {
-                    const api = this.api;
-                    if (api && api.OpenProfile) {
-                        const statusText = document.getElementById('dashboardStatusText');
-                        if (statusText) statusText.textContent = 'Opening Window...';
-                        api.OpenProfile(this.activeProfileId).then(() => {
-                            this.refreshStatuses();
-                        }).catch(err => {
-                            console.error('Failed to open profile:', err);
-                            this.refreshStatuses();
-                        });
-                    }
-                }
-            });
-        }
-
-        // Webview controls
-        const closeBtn = document.getElementById('closeBtn');
-        if (closeBtn) {
-            closeBtn.addEventListener('click', () => this.closeWebview());
-        }
-
-        const minimizeBtn = document.getElementById('minimizeBtn');
-        if (minimizeBtn) {
-            minimizeBtn.addEventListener('click', () => this.minimizeApp());
-        }
-    }
-
-    async loadProfiles() {
-        try {
-            const api = this.api;
-            if (api && api.GetProfilesDTO) {
-                const result = await api.GetProfilesDTO();
-                this.profiles = (result || []).map(p => ({
-                    id: p.id || p.ID,
-                    name: p.name || p.Name,
-                    url: p.url || p.URL || 'https://web.whatsapp.com'
-                }));
-            }
-        } catch (err) {
-            console.error('Failed to load profiles:', err);
-            this.profiles = [];
-        }
-    }
-
-    renderProfiles() {
-        const container = document.getElementById('profilesList');
-        if (!container) return;
-        container.innerHTML = '';
-
-        this.profiles.forEach(profile => {
-            const item = this.createProfileElement(profile);
-            container.appendChild(item);
-        });
-    }
-
-    createProfileElement(profile) {
-        const div = document.createElement('div');
-        div.className = 'profile-item' + (profile.id === this.activeProfileId ? ' active' : '');
-        div.dataset.profileId = profile.id;
-
-        const initial = (profile.name || '?').charAt(0).toUpperCase();
-
-        div.innerHTML = `
-            <div class="profile-avatar">${initial}</div>
-            <div class="profile-badge" id="badge-${profile.id}" title="Offline"></div>
-            <div class="profile-tooltip">${this.escapeHtml(profile.name)}</div>
-        `;
-
-        div.addEventListener('click', () => this.selectProfile(profile.id));
-        div.addEventListener('contextmenu', (e) => this.showProfileContextMenu(e, profile));
-
-        return div;
-    }
-
-    selectProfile(profileId) {
-        this.activeProfileId = profileId;
-
-        // Update UI
-        document.querySelectorAll('.profile-item').forEach(item => {
-            item.classList.toggle('active', item.dataset.profileId === profileId);
-        });
-
-        // Open in dashboard
-        const profile = this.profiles.find(p => p.id === profileId);
-        if (profile) {
-            this.openWebview(profile);
-        }
-    }
-
-    openWebview(profile) {
-        // Hide welcome screen, show webview container
-        const welcomeScreen = document.getElementById('welcomeScreen');
-        const webviewContainer = document.getElementById('webviewContainer');
-        if (welcomeScreen) welcomeScreen.style.display = 'none';
-        if (webviewContainer) webviewContainer.style.display = 'flex';
-
-        // Update header
-        const initial = (profile.name || '?').charAt(0).toUpperCase();
-
-        const profileNameEl = document.getElementById('webviewProfileName');
-        if (profileNameEl) profileNameEl.textContent = profile.name;
-
-        const avatarEl = document.getElementById('webviewAvatar');
-        if (avatarEl) avatarEl.textContent = initial;
-
-        // Update dashboard elements
-        const dashAvatarEl = document.getElementById('dashboardAvatar');
-        if (dashAvatarEl) dashAvatarEl.textContent = initial;
-
-        const dashNameEl = document.getElementById('dashboardProfileName');
-        if (dashNameEl) dashNameEl.textContent = profile.name;
-
-        // Update status immediately from cached state if available
-        const currentStatus = this.profileStatuses[profile.id];
-        this.updateDashboardState(currentStatus);
-
-        // Open or bring WhatsApp window to front
-        const api = this.api;
-        if (api && api.OpenProfile) {
-            api.OpenProfile(profile.id).then(() => {
-                this.refreshStatuses();
-            }).catch(console.error);
-        }
-    }
-
-    closeWebview() {
-        const welcomeScreen = document.getElementById('welcomeScreen');
-        const webviewContainer = document.getElementById('webviewContainer');
-        if (welcomeScreen) welcomeScreen.style.display = 'flex';
-        if (webviewContainer) webviewContainer.style.display = 'none';
-        this.activeProfileId = null;
-        document.querySelectorAll('.profile-item').forEach(item => item.classList.remove('active'));
-    }
-
-    minimizeApp() {
-        const api = this.api;
-        if (api && api.Minimize) {
-            api.Minimize();
-        }
-    }
-
-    openModal() {
-        const modalOverlay = document.getElementById('modalOverlay');
-        if (modalOverlay) modalOverlay.style.display = 'flex';
-        const profileName = document.getElementById('profileName');
-        if (profileName) {
-            profileName.focus();
-            profileName.select();
-        }
-    }
-
-    closeModal() {
-        const modalOverlay = document.getElementById('modalOverlay');
-        if (modalOverlay) modalOverlay.style.display = 'none';
-        const form = document.getElementById('addProfileForm');
-        if (form) form.reset();
-    }
-
-    async handleCreateProfile(e) {
-        if (e && e.preventDefault) {
-            e.preventDefault();
-        }
-
-        const nameInput = document.getElementById('profileName');
-        const name = nameInput ? nameInput.value.trim() : '';
-        if (!name) {
-            if (nameInput) nameInput.focus();
+    $('deleteBtn').onclick = async (e) => {
+        const b = e.currentTarget;
+        if (!b.classList.contains('confirm')) {
+            b.classList.add('confirm');
+            b.textContent = 'Click again to remove (logs out and deletes data)';
             return;
         }
+        await api().DeleteProfile(current());
+        await refresh();
+    };
 
-        const submitBtn = document.getElementById('createProfileSubmitBtn');
-        if (submitBtn) {
-            submitBtn.disabled = true;
-            submitBtn.textContent = 'Creating...';
-        }
-
-        try {
-            const api = await waitForBackend(2000);
-            if (!api || !api.CreateProfile) {
-                throw new Error('Backend API is not available');
-            }
-
-            const profile = await api.CreateProfile(name);
-            const newProfile = {
-                id: profile.id || profile.ID,
-                name: profile.name || profile.Name,
-                url: profile.url || profile.URL || 'https://web.whatsapp.com'
-            };
-
-            // Avoid duplicate additions
-            if (!this.profiles.some(p => p.id === newProfile.id)) {
-                this.profiles.push(newProfile);
-            }
-            this.renderProfiles();
-            this.closeModal();
-            this.selectProfile(newProfile.id);
-        } catch (err) {
-            console.error('Failed to create profile:', err);
-            alert('Failed to create profile: ' + (err.message || err));
-        } finally {
-            if (submitBtn) {
-                submitBtn.disabled = false;
-                submitBtn.textContent = 'Create Profile';
-            }
-        }
-    }
-
-    showProfileContextMenu(e, profile) {
-        e.preventDefault();
-
-        // Remove existing context menu
-        const existing = document.querySelector('.context-menu');
-        if (existing) existing.remove();
-
-        const menu = document.createElement('div');
-        menu.className = 'context-menu';
-        menu.style.cssText = `
-            position: fixed;
-            top: ${e.clientY}px;
-            left: ${e.clientX}px;
-            background: var(--bg-tertiary);
-            border: 1px solid var(--border-color);
-            border-radius: 8px;
-            padding: 8px 0;
-            z-index: 2000;
-            min-width: 160px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-        `;
-
-        menu.innerHTML = `
-            <div class="context-menu-item" data-action="rename" style="padding: 10px 16px; cursor: pointer; transition: background 0.1s;">Rename</div>
-            <div class="context-menu-item" data-action="delete" style="padding: 10px 16px; cursor: pointer; transition: background 0.1s; color: #ff6b6b;">Delete</div>
-        `;
-
-        menu.querySelectorAll('.context-menu-item').forEach(item => {
-            item.addEventListener('mouseenter', () => item.style.background = 'var(--bg-secondary)');
-            item.addEventListener('mouseleave', () => item.style.background = 'transparent');
-            item.addEventListener('click', () => this.handleContextAction(item.dataset.action, profile, menu));
-        });
-
-        document.body.appendChild(menu);
-
-        // Close on click outside
-        const closeMenu = (ev) => {
-            if (!menu.contains(ev.target)) {
-                menu.remove();
-                document.removeEventListener('click', closeMenu);
-            }
-        };
-        setTimeout(() => document.addEventListener('click', closeMenu), 0);
-    }
-
-    async handleContextAction(action, profile, menu) {
-        menu.remove();
-
-        switch (action) {
-            case 'rename':
-                const newName = prompt('Enter new name:', profile.name);
-                if (newName && newName.trim() !== profile.name) {
-                    await this.renameProfile(profile.id, newName.trim());
-                }
-                break;
-            case 'delete':
-                if (confirm(`Delete profile "${profile.name}"?`)) {
-                    await this.deleteProfile(profile.id);
-                }
-                break;
-        }
-    }
-
-    async renameProfile(id, newName) {
-        try {
-            const profile = this.profiles.find(p => p.id === id);
-            const api = this.api;
-            if (profile && api && api.UpdateProfile) {
-                profile.name = newName;
-                await api.UpdateProfile({
-                    id: profile.id,
-                    name: profile.name,
-                    url: profile.url || 'https://web.whatsapp.com'
-                });
-                this.renderProfiles();
-                if (this.activeProfileId === id) {
-                    const profileNameEl = document.getElementById('webviewProfileName');
-                    if (profileNameEl) profileNameEl.textContent = newName;
-                    const avatarEl = document.getElementById('webviewAvatar');
-                    if (avatarEl) avatarEl.textContent = newName.charAt(0).toUpperCase();
-                }
-            }
-        } catch (err) {
-            console.error('Failed to rename profile:', err);
-            alert('Failed to rename profile: ' + (err.message || err));
-        }
-    }
-
-    async deleteProfile(id) {
-        try {
-            const api = this.api;
-            if (api && api.DeleteProfile) {
-                await api.DeleteProfile(id);
-            }
-            this.profiles = this.profiles.filter(p => p.id !== id);
-            this.renderProfiles();
-
-            if (this.activeProfileId === id) {
-                this.closeWebview();
-            }
-        } catch (err) {
-            console.error('Failed to delete profile:', err);
-            alert('Failed to delete profile: ' + (err.message || err));
-        }
-    }
-
-    escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-    }
+    $('autostartToggle').onchange = (e) => api().SetAutoStart(e.target.checked);
+    $('quitBtn').onclick = () => api().Quit();
 }
 
-// Initialize app when DOM is ready
-function startApp() {
-    window.whatsweb = new WhatswebApp();
-}
-
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', startApp);
-} else {
-    startApp();
-}
-
-// Listen for profile updates from backend
-function setupRuntimeEvents() {
-    const wailsRuntime = window.runtime || (typeof runtime !== 'undefined' ? runtime : null);
-    if (wailsRuntime && wailsRuntime.EventsOn) {
-        wailsRuntime.EventsOn('profiles:updated', (profiles) => {
-            if (window.whatsweb) {
-                window.whatsweb.profiles = (profiles || []).map(p => ({
-                    id: p.id || p.ID,
-                    name: p.name || p.Name,
-                    url: p.url || p.URL || 'https://web.whatsapp.com'
-                }));
-                window.whatsweb.renderProfiles();
-            }
-        });
-
-        wailsRuntime.EventsOn('profile:open', (profileId) => {
-            if (window.whatsweb && window.whatsweb.activeProfileId === profileId) {
-                const statusText = document.getElementById('dashboardStatusText');
-                if (statusText) statusText.textContent = 'Session Active (Window Open)';
-            }
-        });
-
-        wailsRuntime.EventsOn('profile:closed', (profileId) => {
-            if (window.whatsweb && window.whatsweb.activeProfileId === profileId) {
-                const statusText = document.getElementById('dashboardStatusText');
-                if (statusText) statusText.textContent = 'Ready to Launch';
-            }
-        });
-    } else {
-        setTimeout(setupRuntimeEvents, 200);
+async function start() {
+    if (!api() || !window.runtime) {
+        setTimeout(start, 50);
+        return;
     }
+    window.runtime.EventsOn('profiles:updated', refresh);
+    window.runtime.EventsOn('profile:status-changed', (s) => {
+        state.status[s.id] = s;
+        render();
+    });
+    $('autostartToggle').checked = await api().IsAutoStart();
+    await refresh();
 }
-setupRuntimeEvents();
+
+bind();
+start();

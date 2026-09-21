@@ -7,136 +7,83 @@
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <div id="app">
-        <!-- Sidebar with circular profile avatars (Discord-like) -->
-        <aside class="sidebar" id="sidebar">
-            <div class="sidebar-header">
-                <h1>Whatsweb</h1>
-            </div>
-            <div class="profiles-list" id="profilesList">
-                <!-- Profiles will be dynamically added here -->
-            </div>
-            <button class="add-profile-btn" id="addProfileBtn" title="Add new profile">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <line x1="12" y1="5" x2="12" y2="19"></line>
-                    <line x1="5" y1="12" x2="19" y2="12"></line>
-                </svg>
-            </button>
-        </aside>
+    <nav class="rail" aria-label="Profiles">
+        <button class="orb home" id="homeBtn" title="Settings" aria-label="Settings">
+            <svg viewBox="0 0 24 24"><path d="M21 11.5a8.4 8.4 0 0 1-12.4 7.4L3 21l2.1-5.5A8.5 8.5 0 1 1 21 11.5z"/></svg>
+        </button>
+        <div class="rail-sep"></div>
+        <div class="rail-list" id="profileList"></div>
+        <button class="orb add" id="addBtn" title="Add account" aria-label="Add account">
+            <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+    </nav>
 
-        <!-- Main content area with webview -->
-        <main class="main-content" id="mainContent">
-            <div class="welcome-screen" id="welcomeScreen">
-                <div class="welcome-content">
-                    <svg class="welcome-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-                    </svg>
-                    <h2>Welcome to Whatsweb</h2>
-                    <p>Add a WhatsApp profile to get started</p>
-                    <button class="btn-primary" id="welcomeAddBtn">Add Profile</button>
+    <main class="main">
+        <section class="view" id="emptyView">
+            <div class="empty">
+                <div class="empty-mark">
+                    <svg viewBox="0 0 24 24"><path d="M21 11.5a8.4 8.4 0 0 1-12.4 7.4L3 21l2.1-5.5A8.5 8.5 0 1 1 21 11.5z"/></svg>
+                </div>
+                <h1>Welcome to Whatsweb</h1>
+                <p>Add a WhatsApp account. Accounts keep running in the background and notify you even with every window closed.</p>
+                <button class="btn primary" id="emptyAddBtn">Add account</button>
+            </div>
+        </section>
+
+        <section class="view" id="profileView" hidden>
+            <header class="bar">
+                <h2 id="barName"></h2>
+                <span class="chip" id="statusChip"></span>
+            </header>
+            <div class="card hero">
+                <div class="avatar big" id="heroAvatar"></div>
+                <div class="hero-text">
+                    <input class="name-input" id="nameInput" aria-label="Account name" spellcheck="false">
+                    <p class="muted" id="statusText"></p>
                 </div>
             </div>
+            <div class="actions">
+                <button class="btn primary" id="openBtn"></button>
+                <button class="btn" id="bgBtn">Send to background</button>
+                <button class="btn" id="powerBtn"></button>
+            </div>
+            <div class="card note">
+                <strong>How background works</strong>
+                <p class="muted">Close the WhatsApp window when you're done. The account moves to a hidden headless session and still sends message and call notifications. Click a notification to reopen the window.</p>
+            </div>
+            <button class="btn danger ghost" id="deleteBtn">Remove account</button>
+        </section>
 
-            <div class="webview-container" id="webviewContainer" style="display: none;">
-                <div class="webview-header">
-                    <div class="profile-info" id="profileInfo">
-                        <div class="profile-avatar" id="webviewAvatar"></div>
-                        <span class="profile-name" id="webviewProfileName"></span>
-                    </div>
-                    <div class="webview-actions">
-                        <button class="icon-btn" id="minimizeBtn" title="Minimize">
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <line x1="5" y1="12" x2="19" y2="12"></line>
-                            </svg>
-                        </button>
-                        <button class="icon-btn" id="closeBtn" title="Close">
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <line x1="18" y1="6" x2="6" y2="18"></line>
-                                <line x1="6" y1="6" x2="18" y2="18"></line>
-                            </svg>
-                        </button>
-                    </div>
+        <section class="view" id="settingsView" hidden>
+            <header class="bar"><h2>Settings</h2></header>
+            <label class="card row">
+                <div>
+                    <strong>Launch at login</strong>
+                    <p class="muted">Start Whatsweb hidden when you sign in, so notifications are there from the start.</p>
                 </div>
-                <div class="profile-dashboard">
-                    <div class="dashboard-card">
-                        <div class="dashboard-avatar" id="dashboardAvatar"></div>
-                        <h2 id="dashboardProfileName"></h2>
-                        <div class="status-indicator" id="dashboardStatusIndicator">
-                            <span class="status-dot"></span>
-                            <span id="dashboardStatusText">Ready to Launch</span>
-                        </div>
-                        <p class="dashboard-desc" id="dashboardDesc">WhatsApp Web runs in an isolated desktop window with encrypted session storage. Scan the QR code once to stay logged in.</p>
-                        <div class="dashboard-actions">
-                            <button class="btn-primary" id="launchWhatsappBtn">
-                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 8px; vertical-align: middle;">
-                                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
-                                    <polyline points="15 3 21 3 21 9"></polyline>
-                                    <line x1="10" y1="14" x2="21" y2="3"></line>
-                                </svg>
-                                <span id="launchBtnText">Open WhatsApp Window</span>
-                            </button>
-                        </div>
-                        <div class="dashboard-features">
-                            <div class="feature-item">
-                                <span class="feature-icon">🔔</span>
-                                <div class="feature-text">
-                                    <strong>Background Notifications</strong>
-                                    <span>Closing the window keeps WhatsApp running so you never miss messages</span>
-                                </div>
-                            </div>
-                            <div class="feature-item">
-                                <span class="feature-icon">🔒</span>
-                                <div class="feature-text">
-                                    <strong>Encrypted Storage</strong>
-                                    <span>Profile data & cookies secured with AES-256</span>
-                                </div>
-                            </div>
-                            <div class="feature-item">
-                                <span class="feature-icon">👥</span>
-                                <div class="feature-text">
-                                    <strong>Multi-Account</strong>
-                                    <span>Independent session partition per profile</span>
-                                </div>
-                            </div>
-                            <div class="feature-item">
-                                <span class="feature-icon">⚡</span>
-                                <div class="feature-text">
-                                    <strong>Persistent Login</strong>
-                                    <span>Session stays active without relogging</span>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
+                <input type="checkbox" class="switch" id="autostartToggle">
+            </label>
+            <div class="card row">
+                <div>
+                    <strong>Quit Whatsweb</strong>
+                    <p class="muted">Closing this window keeps Whatsweb running. Quitting stops every account, so you won't get notifications.</p>
                 </div>
+                <button class="btn danger" id="quitBtn">Quit</button>
             </div>
-        </main>
-    </div>
+        </section>
+    </main>
 
-    <!-- Add Profile Modal -->
-    <div class="modal-overlay" id="modalOverlay" style="display: none;">
-        <div class="modal" id="addProfileModal">
-            <div class="modal-header">
-                <h3>Add New WhatsApp Profile</h3>
-                <button class="modal-close" id="modalClose">&times;</button>
+    <dialog id="addDialog">
+        <form method="dialog" id="addForm">
+            <h3>Add account</h3>
+            <p class="muted">A new WhatsApp window opens. Scan the QR code from your phone.</p>
+            <input id="addName" placeholder="Account name, e.g. Work" maxlength="40" required autocomplete="off">
+            <div class="dialog-actions">
+                <button class="btn" value="cancel" formnovalidate>Cancel</button>
+                <button class="btn primary" value="ok">Add</button>
             </div>
-            <div class="modal-body">
-                <form id="addProfileForm">
-                    <div class="form-group">
-                        <label for="profileName">Profile Name</label>
-                        <input type="text" id="profileName" name="name" placeholder="e.g., Personal, Work" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="profileUrl">WhatsApp Web URL</label>
-                        <input type="url" id="profileUrl" name="url" value="https://web.whatsapp.com" readonly>
-                    </div>
-                    <div class="form-actions">
-                        <button type="button" class="btn-secondary" id="cancelBtn">Cancel</button>
-                        <button type="submit" class="btn-primary" id="createProfileSubmitBtn">Create Profile</button>
-                    </div>
-                </form>
-            </div>
-        </div>
-    </div>
+        </form>
+    </dialog>
 
     <script src="app.js"></script>
 </body>
