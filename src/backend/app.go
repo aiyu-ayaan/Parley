@@ -31,6 +31,7 @@ type App struct {
 	activeProfile     string
 	sessions          map[string]*session
 	shuttingDown      bool
+	startOnce         sync.Once
 	procMu            sync.Mutex
 	mu                sync.RWMutex
 }
@@ -48,13 +49,18 @@ func NewApp(encryptionService *crypto.EncryptionService) *App {
 func (a *App) Startup(ctx context.Context) {
 	a.ctx = ctx
 	a.loadProfiles()
-	for _, p := range a.GetProfiles() {
-		a.startSession(p.ID, false)
-	}
 }
 
 // DomReady is called after the frontend DOM is ready
 func (a *App) DomReady(ctx context.Context) {
+	// Sessions start here, not in Startup: Wails runs Startup concurrently with the
+	// single-instance check, so a second launch would briefly start (and fight over)
+	// every session before exiting. DomReady is never reached by a second instance.
+	a.startOnce.Do(func() {
+		for _, p := range a.GetProfiles() {
+			a.startSession(p.ID, false)
+		}
+	})
 	// Emit profiles to frontend
 	a.emitProfiles()
 }
