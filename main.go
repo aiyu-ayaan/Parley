@@ -18,6 +18,7 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
+// GTK on X11 drops window icons over 256px, so appicon.png stays 256x256.
 //go:embed appicon.png
 var icon []byte
 

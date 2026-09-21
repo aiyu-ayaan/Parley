@@ -10,7 +10,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 PREFIX="${PREFIX:-$HOME/.local}"
 BIN="$PREFIX/bin/parley"
-ICON="$PREFIX/share/icons/hicolor/512x512/apps/parley.png"
+ICON="$PREFIX/share/icons/hicolor/256x256/apps/parley.png"
 DESKTOP="$PREFIX/share/applications/parley.desktop"
 
 refresh() {
