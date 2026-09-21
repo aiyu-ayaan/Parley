@@ -3,7 +3,6 @@
   "outputfilename": "parley",
   "frontend:install": "echo 'No frontend install needed'",
   "frontend:build": "echo 'No frontend build needed'",
-
   "author": {
     "name": "aiyu",
     "email": "aiyu@example.com"
@@ -11,7 +10,7 @@
   "info": {
     "companyName": "Parley",
     "productName": "Parley",
-    "productVersion": "0.0.0",
+    "productVersion": "0.0.1-alpha.1",
     "copyright": "Copyright © 2024 aiyu. All rights reserved."
   },
   "assetsdir": "frontend/dist"
