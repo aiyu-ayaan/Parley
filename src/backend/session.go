@@ -2,6 +2,7 @@ package backend
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,7 +24,28 @@ type session struct {
 	window     bool // current process is the visible app window
 	wantWindow bool // next launch should be the app window
 	stopped    bool // user stopped it; supervisor exits
+	wake       chan struct{}
 }
+
+// poke cuts short a supervisor's backoff so a start, open or stop acts immediately.
+func (s *session) poke() {
+	select {
+	case s.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (s *session) sleep(d time.Duration) {
+	select {
+	case <-s.wake:
+	case <-time.After(d):
+	}
+}
+
+const (
+	minBackoff = 5 * time.Second
+	maxBackoff = 5 * time.Minute
+)
 
 // notifyHook replaces the page's Notification API so every notification WhatsApp raises
 // is handed to Go, and makes the page believe it is hidden so it notifies and never
@@ -56,19 +78,21 @@ func (a *App) startSession(id string, window bool) {
 	}
 	if s, ok := a.sessions[id]; ok {
 		s.stopped = false
+		s.poke()
 		if window && !s.window {
 			s.wantWindow = true
 			killGroup(s.cmd) // supervisor relaunches it as a window
 		}
 		return
 	}
-	a.sessions[id] = &session{wantWindow: window}
+	a.sessions[id] = &session{wantWindow: window, wake: make(chan struct{}, 1)}
 	go a.supervise(id)
 }
 
 // supervise keeps a profile's Chrome alive until it is stopped. When the window is
 // closed, Chrome exits and the loop brings it straight back up headless.
 func (a *App) supervise(id string) {
+	backoff := minBackoff
 	for {
 		a.procMu.Lock()
 		s := a.sessions[id]
@@ -84,8 +108,9 @@ func (a *App) supervise(id string) {
 
 		cmd, err := a.launch(id, window)
 		if err != nil {
-			log.Printf("session %s: launch failed: %v", id, err)
-			time.Sleep(5 * time.Second)
+			log.Printf("session %s: launch failed: %v (retry in %s)", id, err, backoff)
+			s.sleep(backoff)
+			backoff = min(backoff*2, maxBackoff)
 			continue
 		}
 
@@ -104,9 +129,13 @@ func (a *App) supervise(id string) {
 		a.emitStatus(id)
 
 		// Crash-loop guard: an unrequested exit this fast means Chrome can't start.
+		// Back off exponentially so a broken setup doesn't burn CPU all day.
 		if !requested && time.Since(started) < 3*time.Second {
-			log.Printf("session %s: chrome exited after %s, backing off", id, time.Since(started).Round(time.Millisecond))
-			time.Sleep(5 * time.Second)
+			log.Printf("session %s: chrome exited after %s, retry in %s", id, time.Since(started).Round(time.Millisecond), backoff)
+			s.sleep(backoff)
+			backoff = min(backoff*2, maxBackoff)
+		} else {
+			backoff = minBackoff
 		}
 	}
 }
@@ -144,6 +173,9 @@ func (a *App) launch(id string, window bool) (*exec.Cmd, error) {
 		"--no-first-run",
 		"--no-default-browser-check",
 		"--password-store=basic",
+		"--disable-sync",
+		"--disable-default-apps",
+		"--disable-component-update",
 	}
 	if window {
 		cmd := exec.Command(chrome, append(args, "--app="+url, "--class=parley-"+id)...)
@@ -163,7 +195,9 @@ func (a *App) launch(id string, window bool) (*exec.Cmd, error) {
 		inW.Close()
 		return nil, err
 	}
-	cmd := exec.Command(chrome, append(args, "--headless=new", "--remote-debugging-pipe", "--mute-audio")...)
+	// Background sessions only need to receive messages: no images, extensions or
+	// background fetches.
+	cmd := exec.Command(chrome, append(args, backgroundArgs...)...)
 	cmd.ExtraFiles = []*os.File{inR, outW}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	err = cmd.Start()
@@ -182,6 +216,15 @@ func (a *App) launch(id string, window bool) (*exec.Cmd, error) {
 		}
 	}()
 	return cmd, nil
+}
+
+var backgroundArgs = []string{
+	"--headless=new",
+	"--remote-debugging-pipe",
+	"--mute-audio",
+	"--blink-settings=imagesEnabled=false",
+	"--disable-extensions",
+	"--disable-background-networking",
 }
 
 // cdp is a minimal synchronous DevTools client over Chrome's NUL-delimited pipe.
@@ -317,7 +360,11 @@ func (a *App) desktopNotify(id, title, body string) {
 	}
 	a.mu.RUnlock()
 
-	out, err := exec.Command("notify-send", "-a", name, "-i", "whatsapp", "-u", "normal", "-A", "default=Open", title, body).Output()
+	// notify-send -A blocks until the notification is clicked or closed; cap it so a busy
+	// chat can't pile up waiting processes.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "notify-send", "-a", name, "-i", "whatsapp", "-u", "normal", "-A", "default=Open", title, body).Output()
 	if err != nil && len(out) == 0 {
 		// Older notify-send without actions.
 		_ = exec.Command("notify-send", "-a", name, title, body).Run()

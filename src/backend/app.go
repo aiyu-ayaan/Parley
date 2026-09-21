@@ -288,6 +288,7 @@ func (a *App) CloseProfile(id string) error {
 	a.procMu.Lock()
 	if s := a.sessions[id]; s != nil {
 		s.stopped = true
+		s.poke()
 		killGroup(s.cmd)
 	}
 	a.procMu.Unlock()
