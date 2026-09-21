@@ -107,8 +107,11 @@ Closing the Parley dashboard only hides it. Launch Parley again to bring it back
 
 Each account is a Chrome process with its own data dir (`~/.parley/sessions/<id>`), supervised by Parley:
 
-- One `chrome --app` window per account, driven over a private DevTools pipe (`--remote-debugging-pipe`, no TCP port).
-- **Background**: the window is minimised and, on X11 with `xdotool`, unmapped so it leaves the taskbar. The page stays
+- One Chrome per account, started with `--no-startup-window` and driven over a private DevTools pipe
+  (`--remote-debugging-pipe`, no TCP port).
+- **Background start** (login, Start): WhatsApp loads in a hidden, windowless tab, so nothing ever appears on screen.
+- **First Open**: WhatsApp moves into a bare `--app` window (one page load in the already running Chrome).
+- **Hide**: the window is minimised and, on X11 with `xdotool`, unmapped so it leaves the taskbar. The page stays
   loaded, so **Open** shows it instantly. The page reports itself hidden, so chats are not marked as read.
 - **Window closed (X)**: a `beforeunload` guard lets Parley cancel the close over DevTools and hide the window instead,
   so closing is the same as Send to background. Real navigations (reloads, logout) are let through.

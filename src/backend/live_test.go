@@ -74,19 +74,43 @@ func TestLiveWindow(t *testing.T) {
 	}))
 	defer srv.Close()
 	p.URL = srv.URL
+	if u := os.Getenv("PARLEY_URL"); u != "" {
+		p.URL = u
+	}
 	a.UpdateProfile(p)
 
 	a.startSession(p.ID, false)
-	t.Logf("background ready in %s", waitReady(t, a, p.ID))
-	time.Sleep(500 * time.Millisecond)
-	t.Logf("background: %s, mapped=%d, status=%+v", vis(t, a, p.ID), mapped(p.ID), a.GetProfileStatus(p.ID))
+	// A background start must never put a window on screen, not even for a frame.
+	seen := 0
+	for i := 0; i < 60; i++ {
+		seen = max(seen, mapped(p.ID))
+		time.Sleep(50 * time.Millisecond)
+	}
+	waitReady(t, a, p.ID)
+	t.Logf("background: %s, windows ever mapped=%d, status=%+v", vis(t, a, p.ID), seen, a.GetProfileStatus(p.ID))
+	if seen != 0 {
+		t.Error("background start showed a window")
+	}
 
+	// First open creates the app window (one page load).
 	t0 := time.Now()
 	if err := a.OpenProfile(p.ID); err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("open took %s", time.Since(t0))
+	for i := 0; i < 200 && !a.GetProfileStatus(p.ID).HasWindow; i++ {
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Logf("first open took %s", time.Since(t0))
 	time.Sleep(500 * time.Millisecond)
+	if f := os.Getenv("PARLEY_OPEN_SHOT"); f != "" {
+		time.Sleep(4 * time.Second)
+		out, _ := exec.Command("xdotool", "search", "--onlyvisible", "--class", windowClass(p.ID)).Output()
+		if w := strings.Fields(string(out)); len(w) > 0 {
+			exec.Command("xdotool", "windowactivate", "--sync", w[0]).Run()
+		}
+		time.Sleep(300 * time.Millisecond)
+		exec.Command("gnome-screenshot", "-w", "-f", f).Run()
+	}
 	t.Logf("shown: %s, mapped=%d, role=%s, status=%+v", vis(t, a, p.ID), mapped(p.ID), roles(p.ID), a.GetProfileStatus(p.ID))
 	if r := roles(p.ID); r != "pop-up" {
 		t.Errorf("window role %q, want a bare app window (pop-up)", r)

@@ -18,15 +18,18 @@ import (
 	"time"
 )
 
-// session is one profile's supervised Chrome. It always runs as an app window; in the
-// background that window is minimised (and unmapped on X11), so opening it again is
-// instant because the WhatsApp page never reloads.
+// session is one profile's supervised Chrome. Chrome starts with no window and WhatsApp
+// in a hidden (windowless) tab, so a background start never flashes anything. The first
+// Open moves WhatsApp into an app window; from then on closing or hiding that window
+// only unmaps it, so opening again is instant.
 type session struct {
 	cmd        *exec.Cmd
-	page       *page // DevTools handle, nil until the page is set up
-	window     bool  // window is shown
-	wantWindow bool  // show the window once the page is ready
-	stopped    bool  // user stopped it; supervisor exits
+	c          *cdp   // DevTools connection of the running Chrome
+	page       *page  // current WhatsApp tab, nil until it is set up
+	expect     string // "hidden" or "window": the kind of tab being created
+	window     bool   // window is shown
+	wantWindow bool   // show the window once the page is ready
+	stopped    bool   // user stopped it; supervisor exits
 	wake       chan struct{}
 }
 
@@ -36,7 +39,7 @@ type page struct {
 	c           *cdp
 	target      string
 	session     string // DevTools session attached to the tab
-	windowID    int
+	windowID    int    // 0 for the windowless background tab
 	stateScript string // identifier of the injected __parleyHidden script
 }
 
@@ -82,7 +85,7 @@ const notifyHook = `(() => {
   P.hasFocus = function () { return !off(this) && focus.call(this); };
   // Closing the window runs beforeunload; Parley answers the dialog, cancelling a
   // close (and hiding the window instead) but letting real navigations through.
-  if (window === top) addEventListener('beforeunload', (e) => { e.preventDefault(); e.returnValue = ''; });
+  if (window === top) addEventListener('beforeunload', (e) => { if (!window.__parleyLeave) { e.preventDefault(); e.returnValue = ''; } });
 })();`
 
 func (a *App) sessionDir(id string) string {
@@ -159,19 +162,14 @@ func (a *App) supervise(id string) {
 	}
 }
 
-// launch starts Chrome for the profile as an app window driven over a DevTools pipe.
+// launch starts Chrome for the profile, windowless, driven over a DevTools pipe.
 func (a *App) launch(id string, s *session) (*exec.Cmd, error) {
 	a.mu.RLock()
-	p, ok := a.profiles[id]
+	_, ok := a.profiles[id]
 	a.mu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("profile %s not found", id)
 	}
-	url := p.URL
-	if url == "" {
-		url = "https://web.whatsapp.com"
-	}
-
 	dir := a.sessionDir(id)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
@@ -199,17 +197,9 @@ func (a *App) launch(id string, s *session) (*exec.Cmd, error) {
 		// Commands on fd 3, replies on fd 4. No TCP port, so no other local process
 		// can drive the session.
 		"--remote-debugging-pipe",
-		// A real URL: Chrome opens --app=about:blank as a normal tabbed window.
-		"--app=" + url,
+		"--no-startup-window",
 		"--class=" + windowClass(id),
 		"--window-size=1100,800",
-	}
-	a.procMu.Lock()
-	hidden := !s.wantWindow
-	a.procMu.Unlock()
-	if hidden {
-		// Start off-screen so a background launch doesn't flash a window.
-		args = append(args, "--window-position="+strconv.Itoa(offscreen)+","+strconv.Itoa(offscreen))
 	}
 
 	inR, inW, err := os.Pipe()
@@ -243,30 +233,187 @@ func (a *App) launch(id string, s *session) (*exec.Cmd, error) {
 		}
 		outR.Close()
 	}()
+	a.procMu.Lock()
+	s.c = c
+	show := s.wantWindow
+	a.procMu.Unlock()
 	go func() {
-		pg, err := setupPage(c, id, hidden)
+		// Report new windows' tabs, so adoptPage can take the app window openWindow asks for.
+		err := c.call("", "Target.setAutoAttach", map[string]any{
+			"autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true,
+			"filter": []map[string]any{{"type": "page"}, {"exclude": true}},
+		}, nil)
+		if err == nil {
+			if show {
+				err = a.openWindow(id)
+			} else {
+				err = a.openHidden(id)
+			}
+		}
 		if err != nil {
-			log.Printf("session %s: page setup: %v", id, err)
+			log.Printf("session %s: setup: %v", id, err)
 			killGroup(cmd)
-			return
-		}
-		a.procMu.Lock()
-		if s.cmd != nil && s.cmd != cmd {
-			a.procMu.Unlock()
-			return
-		}
-		s.page = pg
-		show := s.wantWindow
-		s.wantWindow = false
-		a.procMu.Unlock()
-		if err := a.setVisible(id, show); err != nil {
-			log.Printf("session %s: window: %v", id, err)
 		}
 	}()
 	return cmd, nil
 }
 
-const offscreen = -32000
+func profileURL(p *Profile) string {
+	if p.URL == "" {
+		return "https://web.whatsapp.com"
+	}
+	return p.URL
+}
+
+// openHidden loads WhatsApp in a windowless tab: running, notifying, never on screen.
+func (a *App) openHidden(id string) error {
+	a.procMu.Lock()
+	s := a.sessions[id]
+	a.mu.RLock()
+	p := a.profiles[id]
+	a.mu.RUnlock()
+	if s == nil || s.c == nil || p == nil {
+		a.procMu.Unlock()
+		return errors.New("session not running")
+	}
+	s.expect = "hidden"
+	c := s.c
+	a.procMu.Unlock()
+	var t struct {
+		TargetID string `json:"targetId"`
+	}
+	if err := c.call("", "Target.createTarget", map[string]any{"url": "about:blank", "hidden": true, "background": true}, &t); err != nil {
+		return err
+	}
+	var at struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := c.call("", "Target.attachToTarget", map[string]any{"targetId": t.TargetID, "flatten": true}, &at); err != nil {
+		return err
+	}
+	a.adoptPage(id, c, at.SessionID, t.TargetID, "hidden")
+	return nil
+}
+
+// windowStub is the page an app window opens on. It has to be a real URL (Chrome
+// opens --app=about:blank as a tabbed window), and it must not be WhatsApp itself,
+// which would start before the hooks are in; adoptPage navigates it to WhatsApp.
+const windowStub = "data:text/html,<title>WhatsApp</title><body style=background:%23111b21>"
+
+// openWindow asks the running Chrome for a WhatsApp app window. There is no DevTools
+// command for app windows, so it launches Chrome again with --app: that instance hands
+// the request to the running one and exits. adoptPage picks the new tab up.
+func (a *App) openWindow(id string) error {
+	a.procMu.Lock()
+	s := a.sessions[id]
+	a.mu.RLock()
+	p := a.profiles[id]
+	a.mu.RUnlock()
+	if s == nil || s.cmd == nil && s.c == nil || p == nil {
+		a.procMu.Unlock()
+		return errors.New("session not running")
+	}
+	s.wantWindow = true
+	if s.expect == "window" {
+		a.procMu.Unlock()
+		return nil // already on its way
+	}
+	s.expect = "window"
+	a.procMu.Unlock()
+
+	chrome, err := findChrome()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return exec.CommandContext(ctx, chrome, "--user-data-dir="+a.sessionDir(id), "--class="+windowClass(id), "--app="+windowStub).Run()
+}
+
+// adoptPage installs the hooks in a new blank tab, makes it the session's WhatsApp page
+// and loads WhatsApp in it. kind must match what the session is expecting, so tabs
+// Parley didn't ask for (links WhatsApp opens) are left alone.
+func (a *App) adoptPage(id string, c *cdp, sid, target, kind string) {
+	a.procMu.Lock()
+	s := a.sessions[id]
+	a.mu.RLock()
+	prof := a.profiles[id]
+	a.mu.RUnlock()
+	if s == nil || s.c != c || s.expect != kind || prof == nil {
+		a.procMu.Unlock()
+		return
+	}
+	s.expect = ""
+	old := s.page
+	a.procMu.Unlock()
+
+	err := func() error {
+		for _, st := range []struct {
+			method string
+			params any
+		}{
+			{"Runtime.addBinding", map[string]any{"name": "__wwNotify"}},
+			{"Runtime.enable", nil},
+			{"Page.enable", nil},
+			{"Page.addScriptToEvaluateOnNewDocument", map[string]any{"source": notifyHook}},
+			{"Page.addScriptToEvaluateOnNewDocument", map[string]any{"source": "window.__parleyHidden = true"}},
+		} {
+			if err := c.call(sid, st.method, st.params, nil); err != nil {
+				return err
+			}
+		}
+		return nil
+	}()
+	pg := &page{c: c, target: target, session: sid}
+	if kind == "window" {
+		var w struct {
+			WindowID int `json:"windowId"`
+		}
+		if err == nil {
+			err = c.call("", "Browser.getWindowForTarget", map[string]any{"targetId": target}, &w)
+		}
+		pg.windowID = w.WindowID
+	}
+	if err != nil {
+		log.Printf("session %s: page setup: %v", id, err)
+		return
+	}
+	// WhatsApp allows one tab per login: retire the old one before the new one starts.
+	if old != nil {
+		_ = c.call(old.session, "Runtime.evaluate", map[string]any{"expression": "window.__parleyLeave = true"}, nil)
+		_ = c.call("", "Target.closeTarget", map[string]any{"targetId": old.target}, nil)
+	}
+	a.procMu.Lock()
+	s.page = pg
+	show := s.wantWindow && kind == "window"
+	s.wantWindow = false
+	a.procMu.Unlock()
+	if err := c.call(sid, "Page.navigate", map[string]any{"url": profileURL(prof)}, nil); err != nil {
+		log.Printf("session %s: load: %v", id, err)
+	}
+	if err := a.setVisible(id, show); err != nil {
+		log.Printf("session %s: window: %v", id, err)
+	}
+}
+
+// pageGone reloads WhatsApp in a hidden tab if its tab disappeared while Chrome lives
+// on (e.g. the window closed without asking).
+func (a *App) pageGone(id string, c *cdp, target string) {
+	a.procMu.Lock()
+	s := a.sessions[id]
+	gone := s != nil && s.c == c && s.page != nil && s.page.target == target
+	if gone {
+		s.page, s.window = nil, false
+	}
+	a.procMu.Unlock()
+	if !gone {
+		return
+	}
+	a.emitStatus(id)
+	if err := a.openHidden(id); err != nil {
+		log.Printf("session %s: reopen: %v", id, err)
+	}
+}
 
 func windowClass(id string) string { return "parley-" + id }
 
@@ -279,11 +426,21 @@ func (a *App) onEvent(id string, c *cdp) func(cdpMsg) {
 	navigating := map[string]bool{}
 	return func(m cdpMsg) {
 		var p struct {
-			Name, Payload, FrameID, Type string
-			Frame                        struct{ ID string }
+			Name, Payload, FrameID, Type, SessionID, TargetID string
+			Frame                                             struct{ ID string }
+			TargetInfo                                        struct {
+				TargetID string `json:"targetId"`
+				URL      string `json:"url"`
+			}
 		}
 		_ = json.Unmarshal(m.Params, &p)
 		switch m.Method {
+		case "Target.attachedToTarget":
+			if strings.HasPrefix(p.TargetInfo.URL, "data:text/html,<title>WhatsApp</title>") {
+				go a.adoptPage(id, c, p.SessionID, p.TargetInfo.TargetID, "window")
+			}
+		case "Target.targetDestroyed":
+			go a.pageGone(id, c, p.TargetID)
 		case "Runtime.bindingCalled":
 			var n struct{ Title, Body string }
 			if p.Name == "__wwNotify" && json.Unmarshal([]byte(p.Payload), &n) == nil {
@@ -321,69 +478,6 @@ func (a *App) onEvent(id string, c *cdp) func(cdpMsg) {
 	}
 }
 
-// setupPage takes the app window's tab, installs the hooks and reloads so they apply
-// from the first script WhatsApp runs.
-func setupPage(c *cdp, id string, hidden bool) (*page, error) {
-	var target string
-	for i := 0; target == "" && i < 50; i++ {
-		var r struct {
-			TargetInfos []struct {
-				TargetID string `json:"targetId"`
-				Type     string `json:"type"`
-			} `json:"targetInfos"`
-		}
-		if err := c.call("", "Target.getTargets", nil, &r); err != nil {
-			return nil, err
-		}
-		for _, t := range r.TargetInfos {
-			if t.Type == "page" {
-				target = t.TargetID
-				break
-			}
-		}
-		if target == "" {
-			time.Sleep(100 * time.Millisecond)
-		}
-	}
-	if target == "" {
-		return nil, errors.New("no page target")
-	}
-	var w struct {
-		WindowID int `json:"windowId"`
-	}
-	if err := c.call("", "Browser.getWindowForTarget", map[string]any{"targetId": target}, &w); err != nil {
-		return nil, err
-	}
-	if hidden {
-		// Hide right away; the window manager may have ignored the off-screen position.
-		_ = c.call("", "Browser.setWindowBounds", map[string]any{"windowId": w.WindowID, "bounds": map[string]any{"windowState": "minimized"}}, nil)
-		x11Window(id, "windowunmap")
-	}
-	var attached struct {
-		SessionID string `json:"sessionId"`
-	}
-	if err := c.call("", "Target.attachToTarget", map[string]any{"targetId": target, "flatten": true}, &attached); err != nil {
-		return nil, err
-	}
-	sid := attached.SessionID
-	for _, st := range []struct {
-		method string
-		params any
-	}{
-		{"Runtime.addBinding", map[string]any{"name": "__wwNotify"}},
-		{"Runtime.enable", nil},
-		{"Page.enable", nil},
-		{"Page.addScriptToEvaluateOnNewDocument", map[string]any{"source": notifyHook}},
-		{"Page.addScriptToEvaluateOnNewDocument", map[string]any{"source": "window.__parleyHidden = true"}},
-		{"Page.reload", nil},
-	} {
-		if err := c.call(sid, st.method, st.params, nil); err != nil {
-			return nil, err
-		}
-	}
-	return &page{c: c, target: target, session: sid, windowID: w.WindowID}, nil
-}
-
 // setVisible shows or hides a running session's window. Hidden means minimised, which
 // also makes the page report itself hidden so WhatsApp notifies and doesn't mark chats
 // read. On X11 the window is unmapped too, so it leaves the taskbar.
@@ -398,6 +492,15 @@ func (a *App) setVisible(id string, visible bool) error {
 	if p == nil {
 		return errors.New("session not ready")
 	}
+	if p.windowID == 0 && visible {
+		// Background tab: WhatsApp moves into a fresh app window (one load, then instant).
+		go func() {
+			if err := a.openWindow(id); err != nil {
+				log.Printf("session %s: open window: %v", id, err)
+			}
+		}()
+		return nil
+	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -407,20 +510,17 @@ func (a *App) setVisible(id string, visible bool) error {
 	bounds := func(b map[string]any) error {
 		return p.c.call("", "Browser.setWindowBounds", map[string]any{"windowId": p.windowID, "bounds": b}, nil)
 	}
-	if visible {
+	switch {
+	case p.windowID == 0:
+		// Windowless tab: nothing on screen to hide.
+	case visible:
 		x11Window(id, "windowmap")
 		if err := bounds(map[string]any{"windowState": "normal"}); err != nil {
 			return err
 		}
-		var cur struct {
-			Bounds struct{ Left, Top int } `json:"bounds"`
-		}
-		if p.c.call("", "Browser.getWindowBounds", map[string]any{"windowId": p.windowID}, &cur) == nil && cur.Bounds.Left <= offscreen/2 {
-			_ = bounds(map[string]any{"left": 120, "top": 80})
-		}
 		_ = p.c.call("", "Target.activateTarget", map[string]any{"targetId": p.target}, nil)
 		x11Window(id, "windowactivate")
-	} else {
+	default:
 		if err := bounds(map[string]any{"windowState": "minimized"}); err != nil {
 			return err
 		}
