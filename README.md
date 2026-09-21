@@ -222,6 +222,24 @@ MIT License - Feel free to use and modify.
 3. Make your changes
 4. Submit a PR
 
-Commit format: `type(scope): message`
-- Types: feat, fix, docs, refactor, test, chore
-- Scopes: ui, backend, crypto, build
+Commit format: `type(scope) : message`
+- Types: feat, fix, docs, refactor, perf, test, chore, ci
+- Scopes: ui, backend
+
+## Releases
+
+Start a commit subject on master with a marker to release:
+
+| Marker | Example | Result |
+| --- | --- | --- |
+| `!fix` | `1.4.2 -> 1.4.3` | stable |
+| `!feat` | `1.4.2 -> 1.5.0` | stable |
+| `!major` | `1.4.2 -> 2.0.0` | stable |
+| `!alpha` | `1.4.2 -> 1.4.3-alpha.1` | alpha pre-release |
+| `!beta` | `1.4.3-alpha.2 -> 1.4.3-beta.1` | beta pre-release |
+| `!stable` | `1.4.3-beta.1 -> 1.4.3` | promote to stable |
+
+A marker opens (or updates) a release PR that bumps `wails.json` and writes `CHANGELOG.md`.
+Merging it builds `parley-<version>-linux-amd64.tar.gz` and publishes the GitHub Release.
+The GitHub Actions setting "Allow GitHub Actions to create and approve pull requests" must be on
+(or add a `RELEASE_TOKEN` secret).

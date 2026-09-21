@@ -37,6 +37,16 @@ Type can be     : feat,fix,docs. (feel free to add any).
 
 Scope can be    : ui,backend
 
+Do not add AI co-author trailers to commits.
+
+## Releases
+
+Put a marker at the start of a commit subject on master to ask for a release:
+`!fix`, `!feat`, `!major` (stable) or `!alpha`, `!beta`, `!stable` (channels),
+e.g. `!feat(ui) : add account search`. `.github/workflows/release.yml` then opens
+one release PR (version bump in wails.json + CHANGELOG). Merging it builds the
+Linux binary and publishes the GitHub Release. Rules: `scripts/release`.
+
 
 ## For agents
 

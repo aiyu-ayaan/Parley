@@ -1,0 +1,265 @@
+# Release flow, driven by a marker at the START of a commit subject on master:
+#
+#   !major   1.4.2         -> 2.0.0          stable
+#   !feat    1.4.2         -> 1.5.0          stable
+#   !fix     1.4.2         -> 1.4.3          stable
+#   !alpha   1.4.2         -> 1.4.3-alpha.1  pre-release (alpha channel)
+#   !beta    1.4.3-alpha.2 -> 1.4.3-beta.1   pre-release (beta channel)
+#   !stable  1.4.3-beta.1  -> 1.4.3          promote to stable
+#
+# e.g. `!feat(ui) : add account search`. The rules live in scripts/release.
+#
+# TWO STEPS
+#
+#   1. A marker on master opens (or updates) ONE release PR on `chore/release`.
+#      It bumps info.productVersion in wails.json and writes the CHANGELOG entry
+#      from every commit since the last tag. Nothing is built. Later pushes
+#      update the same PR, so it always shows what the next release contains.
+#
+#   2. Merging that PR is the release: the Linux binary is built, then the tag
+#      and the GitHub Release are created last, so a failed build publishes
+#      nothing. Alpha and beta go out as GitHub pre-releases; stable is marked
+#      latest.
+#
+# If step 2 fails after the PR merged, fix it and run this workflow by hand with
+# mode `release`: it releases the version master already carries.
+
+name: Release
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'pr = open the release PR; release = build and publish the version master carries'
+        required: true
+        default: pr
+        type: choice
+        options: [pr, release]
+      marker:
+        description: 'Release type (pr mode only)'
+        required: false
+        default: fix
+        type: choice
+        options: [fix, feat, major, alpha, beta, stable]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# Never two at once: the second would compute from a version the first moved past.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  # --- Is this push a merged release PR? -------------------------------------
+
+  merged:
+    name: Detect a merged release PR
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.detect.outputs.release }}
+      version: ${{ steps.detect.outputs.version }}
+      prerelease: ${{ steps.detect.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Only a release PR moves the version, so a changed version is the answer
+      # whichever way the PR was merged (merge, squash or rebase).
+      - id: detect
+        env:
+          EVENT: ${{ github.event_name }}
+          MODE: ${{ inputs.mode }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          current="$(jq -r .info.productVersion wails.json)"
+          release=false
+          if [ "$EVENT" = workflow_dispatch ]; then
+            [ "$MODE" = release ] && release=true
+          else
+            base="$BEFORE_SHA"
+            git cat-file -e "$base^{commit}" 2>/dev/null || base="HEAD^"
+            previous="$(git show "$base:wails.json" 2>/dev/null | jq -r .info.productVersion || true)"
+            echo "version: ${previous:-<none>} -> $current"
+            [ -n "$previous" ] && [ "$previous" != "$current" ] && release=true
+          fi
+          if [ "$release" = true ] && git rev-parse -q --verify "refs/tags/v$current" >/dev/null; then
+            echo "::error::v$current is already released."
+            exit 1
+          fi
+          {
+            echo "release=$release"
+            echo "version=$current"
+            case "$current" in *-*) echo prerelease=true ;; *) echo prerelease=false ;; esac
+          } >> "$GITHUB_OUTPUT"
+
+  # --- Step 1: the release PR ------------------------------------------------
+
+  release-pr:
+    name: Open or update the release PR
+    needs: merged
+    # The push that lands a release PR still carries its markers; it must not
+    # open the next PR before the tag exists.
+    if: needs.merged.outputs.release != 'true' && (github.event_name == 'push' || inputs.mode == 'pr')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - run: go test ./scripts/release
+
+      # Every commit since the last release, not just this push: a marker pushed
+      # yesterday and a fix pushed today both belong in the one pending release.
+      - name: Collect unreleased commit subjects
+        env:
+          EVENT: ${{ github.event_name }}
+          MARKER: ${{ inputs.marker }}
+        run: |
+          last="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+          git log ${last:+"$last..HEAD"} --format=%s > subjects.txt
+          [ "$EVENT" = workflow_dispatch ] && echo "!$MARKER : manual release" >> subjects.txt
+          cat subjects.txt
+
+      - name: Next version
+        id: next
+        run: |
+          go run ./scripts/release next \
+            --current "$(jq -r .info.productVersion wails.json)" \
+            --subjects-file subjects.txt | tee -a "$GITHUB_OUTPUT"
+
+      - name: Bump version and write the CHANGELOG entry
+        if: steps.next.outputs.release == 'true'
+        env:
+          VERSION: ${{ steps.next.outputs.version }}
+        run: |
+          jq --arg v "$VERSION" '.info.productVersion = $v' wails.json > wails.json.tmp
+          mv wails.json.tmp wails.json
+          grep -v '^!.* : manual release$' subjects.txt > subjects.clean || true
+          go run ./scripts/release notes --version "$VERSION" \
+            --repository "$GITHUB_REPOSITORY" --subjects-file subjects.clean
+          rm -f subjects.txt subjects.clean
+          cat CHANGELOG.md
+
+      - name: Open or update the PR
+        if: steps.next.outputs.release == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          commit-message: 'chore(release) : v${{ steps.next.outputs.version }}'
+          title: 'chore(release) : v${{ steps.next.outputs.version }}'
+          body: |
+            Automated release PR, from a `!${{ steps.next.outputs.marker }}` marker on master.
+
+            | | |
+            | --- | --- |
+            | Version | `${{ steps.next.outputs.version }}` |
+            | Channel | `${{ steps.next.outputs.channel }}` |
+
+            The CHANGELOG diff is the release note. Edit it on this branch if it
+            reads badly.
+
+            **Merging this PR releases.** It builds the Linux binary, then creates
+            the tag and the GitHub Release. Closing it releases nothing.
+          branch: chore/release
+          base: master
+          labels: release
+          delete-branch: true
+
+  # --- Step 2: merging that PR is the release --------------------------------
+
+  build:
+    name: Build v${{ needs.merged.outputs.version }}
+    needs: merged
+    if: needs.merged.outputs.release == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config
+
+      - run: go test ./...
+
+      # Same Wails CLI version as the library in go.mod.
+      - name: Install Wails
+        run: go install "github.com/wailsapp/wails/v2/cmd/wails@$(go list -m -f '{{.Version}}' github.com/wailsapp/wails/v2)"
+
+      # Ubuntu 24.04 only ships webkit2gtk-4.1, which Wails selects by tag.
+      - run: wails build -tags webkit2_41 -trimpath -clean
+
+      - name: Package
+        env:
+          VERSION: ${{ needs.merged.outputs.version }}
+        run: |
+          mkdir dist
+          tar -czf "dist/parley-${VERSION}-linux-amd64.tar.gz" -C build/bin parley
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish v${{ needs.merged.outputs.version }}
+    needs: [merged, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux
+          path: dist
+
+      # The notes were reviewed in the release PR; read them back out of CHANGELOG.md.
+      - name: Release notes
+        id: notes
+        env:
+          VERSION: ${{ needs.merged.outputs.version }}
+        run: |
+          {
+            echo 'body<<CHANGELOG_EOF'
+            go run ./scripts/release section --version "$VERSION"
+            echo CHANGELOG_EOF
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.merged.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: v${{ needs.merged.outputs.version }}
+          prerelease: ${{ needs.merged.outputs.prerelease == 'true' }}
+          make_latest: ${{ needs.merged.outputs.prerelease != 'true' }}
+          body: |
+            ${{ steps.notes.outputs.body }}
+
+            ## Install (Linux x86_64)
+
+            Needs `libwebkit2gtk-4.1-0`, `libnotify-bin` and a Chromium-based browser.
+
+            ```bash
+            tar -xzf parley-${{ needs.merged.outputs.version }}-linux-amd64.tar.gz
+            sudo install parley /usr/local/bin/
+            parley
+            ```
+          files: dist/*
