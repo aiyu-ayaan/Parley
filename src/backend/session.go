@@ -83,6 +83,16 @@ const notifyHook = `(() => {
   Object.defineProperty(P, 'hidden', {configurable: true, get() { return off(this); }});
   Object.defineProperty(P, 'visibilityState', {configurable: true, get() { return off(this) ? 'hidden' : 'visible'; }});
   P.hasFocus = function () { return !off(this) && focus.call(this); };
+  // Mute WhatsApp's own new-message tone; notify-send plays the system sound instead.
+  // Its module loader is assigned as window.__d, so wrap it and stub playNotification
+  // on the WAWebNotificationTone module's exports. Ringtones and voice notes are untouched.
+  if (window === top) {
+    const quiet = (f) => function () { const r = f.apply(this, arguments); for (const x of arguments) if (x && typeof x.playNotification === 'function') x.playNotification = () => {}; return r; };
+    let d;
+    Object.defineProperty(window, '__d', {configurable: true, get() { return d; }, set(fn) {
+      d = typeof fn !== 'function' ? fn : function (n, deps, f, fl) { return fn.call(this, n, deps, n === 'WAWebNotificationTone' && typeof f === 'function' ? quiet(f) : f, fl); };
+    }});
+  }
   // Closing the window runs beforeunload; Parley answers the dialog, cancelling a
   // close (and hiding the window instead) but letting real navigations through.
   if (window === top) addEventListener('beforeunload', (e) => { if (!window.__parleyLeave) { e.preventDefault(); e.returnValue = ''; } });
@@ -699,7 +709,7 @@ func (a *App) desktopNotify(id, title, body string) {
 	// chat can't pile up waiting processes.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "notify-send", "-a", name, "-i", "whatsapp", "-u", "normal", "-A", "default=Open", title, body).Output()
+	out, err := exec.CommandContext(ctx, "notify-send", "-a", name, "-i", "parley", "-u", "normal", "-h", "string:sound-name:message-new-instant", "-A", "default=Open", title, body).Output()
 	if err != nil && len(out) == 0 {
 		// Older notify-send without actions.
 		_ = exec.Command("notify-send", "-a", name, title, body).Run()
