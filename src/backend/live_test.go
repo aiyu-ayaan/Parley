@@ -1,6 +1,8 @@
 package backend
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"strings"
@@ -66,7 +68,12 @@ func TestLiveWindow(t *testing.T) {
 	a, cleanup := createTestApp(t)
 	defer cleanup()
 	p, _ := a.CreateProfile("live")
-	p.URL = "data:text/html,<title>live</title>hello"
+	// A real http page: Chrome won't let a page reload itself to a data: URL.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("<title>live</title>hello"))
+	}))
+	defer srv.Close()
+	p.URL = srv.URL
 	a.UpdateProfile(p)
 
 	a.startSession(p.ID, false)
@@ -99,26 +106,43 @@ func TestLiveWindow(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 	t.Logf("reshown: %s, mapped=%d", vis(t, a, p.ID), mapped(p.ID))
 
-	// User closes the window: Chrome quits and comes back hidden.
+	// User clicks X: the close is cancelled and the window just hides, same Chrome.
 	a.procMu.Lock()
 	old := a.sessions[p.ID].cmd
 	a.procMu.Unlock()
-	out, _ := exec.Command("xdotool", "search", "--onlyvisible", "--class", windowClass(p.ID)).Output()
-	for _, w := range strings.Fields(string(out)) {
-		exec.Command("wmctrl", "-i", "-c", w).Run()
-	}
-	for i := 0; i < 100; i++ {
-		a.procMu.Lock()
-		s := a.sessions[p.ID]
-		back := s.cmd != nil && s.cmd != old && s.page != nil
-		a.procMu.Unlock()
-		if back {
-			break
+	pg.c.call(pg.session, "Runtime.evaluate", map[string]any{"expression": "0", "userGesture": true}, nil)
+	closeWindow := func() {
+		out, _ := exec.Command("xdotool", "search", "--onlyvisible", "--class", windowClass(p.ID)).Output()
+		for _, w := range strings.Fields(string(out)) {
+			exec.Command("wmctrl", "-i", "-c", w).Run()
 		}
-		time.Sleep(100 * time.Millisecond)
 	}
-	time.Sleep(500 * time.Millisecond)
-	t.Logf("after close: %s, mapped=%d, status=%+v", vis(t, a, p.ID), mapped(p.ID), a.GetProfileStatus(p.ID))
+	closeWindow()
+	time.Sleep(150 * time.Millisecond)
+	exec.Command("gnome-screenshot", "-f", os.Getenv("PARLEY_SHOT")).Run()
+	time.Sleep(time.Second)
+	a.procMu.Lock()
+	same := a.sessions[p.ID].cmd == old
+	a.procMu.Unlock()
+	t.Logf("after X: same chrome=%v, %s, mapped=%d, status=%+v", same, vis(t, a, p.ID), mapped(p.ID), a.GetProfileStatus(p.ID))
+	if !same || mapped(p.ID) != 0 {
+		t.Error("closing the window should hide it, not restart Chrome")
+	}
+
+	// A page-initiated reload must still go through (e.g. WhatsApp logging out).
+	pg.c.call(pg.session, "Runtime.evaluate", map[string]any{"expression": "window.__marker = 1; setTimeout(() => location.reload(), 10)", "userGesture": true}, nil)
+	time.Sleep(1500 * time.Millisecond)
+	var mk struct{ Result struct{ Type string } }
+	pg.c.call(pg.session, "Runtime.evaluate", map[string]any{"expression": "window.__marker"}, &mk)
+	t.Logf("after page reload: marker=%s (undefined = reloaded)", mk.Result.Type)
+	if mk.Result.Type != "undefined" {
+		t.Error("page-initiated reload was blocked")
+	}
+
+	// Open again after the X-close: still instant.
+	t0 = time.Now()
+	a.OpenProfile(p.ID)
+	t.Logf("reopen after X took %s, mapped=%d", time.Since(t0), mapped(p.ID))
 
 	a.CloseProfile(p.ID)
 	time.Sleep(2 * time.Second)

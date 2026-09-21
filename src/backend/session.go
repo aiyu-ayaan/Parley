@@ -80,6 +80,9 @@ const notifyHook = `(() => {
   Object.defineProperty(P, 'hidden', {configurable: true, get() { return off(this); }});
   Object.defineProperty(P, 'visibilityState', {configurable: true, get() { return off(this) ? 'hidden' : 'visible'; }});
   P.hasFocus = function () { return !off(this) && focus.call(this); };
+  // Closing the window runs beforeunload; Parley answers the dialog, cancelling a
+  // close (and hiding the window instead) but letting real navigations through.
+  if (window === top) addEventListener('beforeunload', (e) => { e.preventDefault(); e.returnValue = ''; });
 })();`
 
 func (a *App) sessionDir(id string) string {
@@ -231,7 +234,8 @@ func (a *App) launch(id string, s *session) (*exec.Cmd, error) {
 		return nil, err
 	}
 
-	c := newCDP(inW, a.onEvent(id))
+	c := newCDP(inW, nil)
+	c.onEvent = a.onEvent(id, c)
 	go func() {
 		defer inW.Close()
 		if err := c.readLoop(outR); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, os.ErrClosed) {
@@ -240,7 +244,7 @@ func (a *App) launch(id string, s *session) (*exec.Cmd, error) {
 		outR.Close()
 	}()
 	go func() {
-		pg, err := setupPage(c)
+		pg, err := setupPage(c, id, hidden)
 		if err != nil {
 			log.Printf("session %s: page setup: %v", id, err)
 			killGroup(cmd)
@@ -266,22 +270,60 @@ const offscreen = -32000
 
 func windowClass(id string) string { return "parley-" + id }
 
-func (a *App) onEvent(id string) func(cdpMsg) {
+// onEvent handles DevTools events for one Chrome launch. It runs on the pipe reader, so
+// anything that makes a DevTools call goes to its own goroutine.
+func (a *App) onEvent(id string, c *cdp) func(cdpMsg) {
+	// Frames with a navigation under way. Chrome reports one (frameRequestedNavigation
+	// from the page, frameStartedNavigating from the browser) before running
+	// beforeunload; a window close reports none. That tells the two apart.
+	navigating := map[string]bool{}
 	return func(m cdpMsg) {
-		if m.Method != "Runtime.bindingCalled" {
-			return
+		var p struct {
+			Name, Payload, FrameID, Type string
+			Frame                        struct{ ID string }
 		}
-		var ev struct{ Name, Payload string }
-		var n struct{ Title, Body string }
-		if json.Unmarshal(m.Params, &ev) == nil && ev.Name == "__wwNotify" && json.Unmarshal([]byte(ev.Payload), &n) == nil {
-			go a.desktopNotify(id, n.Title, n.Body)
+		_ = json.Unmarshal(m.Params, &p)
+		switch m.Method {
+		case "Runtime.bindingCalled":
+			var n struct{ Title, Body string }
+			if p.Name == "__wwNotify" && json.Unmarshal([]byte(p.Payload), &n) == nil {
+				go a.desktopNotify(id, n.Title, n.Body)
+			}
+		case "Page.frameRequestedNavigation", "Page.frameStartedNavigating":
+			navigating[p.FrameID] = true
+		case "Page.frameNavigated":
+			delete(navigating, p.Frame.ID)
+		case "Page.navigatedWithinDocument", "Page.frameStoppedLoading", "Page.frameClearedScheduledNavigation", "Page.javascriptDialogClosed":
+			delete(navigating, p.FrameID)
+		case "Page.loadEventFired":
+			// beforeunload only asks when the page has had a user gesture.
+			go c.call(m.SessionID, "Runtime.evaluate", map[string]any{"expression": "0", "userGesture": true}, nil)
+		case "Page.javascriptDialogOpening":
+			if p.Type != "beforeunload" {
+				return
+			}
+			nav := navigating[p.FrameID]
+			go func() {
+				a.procMu.Lock()
+				s := a.sessions[id]
+				quitting := s == nil || s.stopped || a.shuttingDown
+				a.procMu.Unlock()
+				leave := nav || quitting
+				if !leave {
+					x11Window(id, "windowunmap") // before the dialog can paint
+				}
+				_ = c.call(m.SessionID, "Page.handleJavaScriptDialog", map[string]any{"accept": leave}, nil)
+				if !leave {
+					_ = a.setVisible(id, false)
+				}
+			}()
 		}
 	}
 }
 
 // setupPage takes the app window's tab, installs the hooks and reloads so they apply
 // from the first script WhatsApp runs.
-func setupPage(c *cdp) (*page, error) {
+func setupPage(c *cdp, id string, hidden bool) (*page, error) {
 	var target string
 	for i := 0; target == "" && i < 50; i++ {
 		var r struct {
@@ -306,6 +348,17 @@ func setupPage(c *cdp) (*page, error) {
 	if target == "" {
 		return nil, errors.New("no page target")
 	}
+	var w struct {
+		WindowID int `json:"windowId"`
+	}
+	if err := c.call("", "Browser.getWindowForTarget", map[string]any{"targetId": target}, &w); err != nil {
+		return nil, err
+	}
+	if hidden {
+		// Hide right away; the window manager may have ignored the off-screen position.
+		_ = c.call("", "Browser.setWindowBounds", map[string]any{"windowId": w.WindowID, "bounds": map[string]any{"windowState": "minimized"}}, nil)
+		x11Window(id, "windowunmap")
+	}
 	var attached struct {
 		SessionID string `json:"sessionId"`
 	}
@@ -327,12 +380,6 @@ func setupPage(c *cdp) (*page, error) {
 		if err := c.call(sid, st.method, st.params, nil); err != nil {
 			return nil, err
 		}
-	}
-	var w struct {
-		WindowID int `json:"windowId"`
-	}
-	if err := c.call("", "Browser.getWindowForTarget", map[string]any{"targetId": target}, &w); err != nil {
-		return nil, err
 	}
 	return &page{c: c, target: target, session: sid, windowID: w.WindowID}, nil
 }
@@ -418,11 +465,12 @@ type cdp struct {
 }
 
 type cdpMsg struct {
-	ID     int             `json:"id"`
-	Method string          `json:"method"`
-	Params json.RawMessage `json:"params"`
-	Result json.RawMessage `json:"result"`
-	Error  *struct {
+	ID        int             `json:"id"`
+	SessionID string          `json:"sessionId"`
+	Method    string          `json:"method"`
+	Params    json.RawMessage `json:"params"`
+	Result    json.RawMessage `json:"result"`
+	Error     *struct {
 		Message string `json:"message"`
 	} `json:"error"`
 }

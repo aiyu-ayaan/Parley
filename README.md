@@ -110,7 +110,9 @@ Each account is a Chrome process with its own data dir (`~/.parley/sessions/<id>
 - One `chrome --app` window per account, driven over a private DevTools pipe (`--remote-debugging-pipe`, no TCP port).
 - **Background**: the window is minimised and, on X11 with `xdotool`, unmapped so it leaves the taskbar. The page stays
   loaded, so **Open** shows it instantly. The page reports itself hidden, so chats are not marked as read.
-- **Window closed**: Chrome exits, and Parley relaunches it hidden on the same data dir, so the login is kept.
+- **Window closed (X)**: a `beforeunload` guard lets Parley cancel the close over DevTools and hide the window instead,
+  so closing is the same as Send to background. Real navigations (reloads, logout) are let through.
+  If Chrome exits anyway (crash), Parley relaunches it hidden on the same data dir, so the login is kept.
 - A hook forwards every WhatsApp notification to `notify-send`; clicking one opens that account's window.
 
 ## Configuration
