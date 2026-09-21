@@ -10,7 +10,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 PREFIX="${PREFIX:-$HOME/.local}"
 BIN="$PREFIX/bin/parley"
-ICON="$PREFIX/share/icons/hicolor/256x256/apps/parley.png"
+ICON="$PREFIX/share/icons/hicolor/256x256/apps/com.parley.app.png"
 DESKTOP="$PREFIX/share/applications/parley.desktop"
 
 refresh() {
@@ -19,7 +19,7 @@ refresh() {
 }
 
 if [ "${1:-}" = --uninstall ]; then
-    rm -f "$BIN" "$ICON" "$DESKTOP" "$HOME/.config/autostart/parley.desktop"
+    rm -f "$BIN" "$ICON" "${ICON%/*}/parley.png" "$DESKTOP" "$HOME/.config/autostart/parley.desktop"
     refresh
     echo "Parley removed. Profiles are still in ~/.parley."
     exit 0
@@ -42,7 +42,7 @@ Type=Application
 Name=Parley
 Comment=WhatsApp Web Desktop Application
 Exec=$BIN
-Icon=parley
+Icon=com.parley.app
 Terminal=false
 Categories=Network;InstantMessaging;
 StartupNotify=true
