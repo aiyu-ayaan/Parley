@@ -7,13 +7,16 @@ A lightweight Linux desktop application for WhatsApp Web with multi-account supp
 - **Lightweight** - Native desktop app with minimal resource usage
 - **Multi-account support** - Run multiple WhatsApp profiles simultaneously (Discord-style circular UI)
 - **Persistent sessions** - Profiles are saved encrypted, no need to re-login
-- **Native notifications** - Get WhatsApp notifications like a native app
+- **Always-on background** - Close the window and the account keeps running headless, still notifying
+- **Native notifications** - Desktop notifications for every account; click one to open that account
 - **Auto-start option** - Launch on system startup
 - **Encrypted storage** - All user data stored securely with AES-256 encryption
 
 ## Prerequisites
 
 - Go 1.21 or later
+- A Chromium-based browser (`google-chrome`, `chromium`, `brave-browser` or `microsoft-edge`)
+- `notify-send` (package `libnotify-bin` / `libnotify`)
 - Wails v2 CLI (`go install github.com/wailsapp/wails/v2/cmd/wails@latest`)
 - **WebView2 dependencies** (Linux: webkit2gtk-4.1)
 
@@ -90,12 +93,24 @@ whatsweb
 
 ## Usage
 
-1. **First Launch**: Click the `+` button in the sidebar or the "Add Profile" button on the welcome screen
-2. **Create Profile**: Enter a name (e.g., "Personal", "Work") and click "Create Profile"
-3. **Scan QR Code**: WhatsApp Web will open - scan the QR code with your phone
-4. **Add More**: Click `+` to add additional profiles
-5. **Switch Accounts**: Click on profile circles in the sidebar to switch between accounts
-6. **Right-click** a profile for rename/delete options
+1. **Add an account**: Click `+` in the rail, enter a name (e.g. "Work"). A WhatsApp window opens; scan the QR code.
+2. **Close the WhatsApp window** when done. The account keeps running headless and keeps notifying.
+3. **Accounts rail**: click an avatar to manage it, double-click to open its window. The dot shows state:
+   green = window open, blue = background, grey = stopped.
+4. **Rename** by editing the name in the account panel. **Remove** logs out and deletes its data.
+5. **Settings** (top icon): launch at login, and Quit.
+
+Closing the Whatsweb dashboard only hides it. Launch Whatsweb again to bring it back. Use **Settings → Quit** to stop everything.
+
+## How background works
+
+Each account is a Chrome process with its own data dir (`~/.whatsweb/sessions/<id>`), supervised by Whatsweb:
+
+- **Window open**: `chrome --app=https://web.whatsapp.com`. Chrome shows notifications itself.
+- **Window closed**: Chrome exits, and Whatsweb relaunches it `--headless=new` on the same data dir, so the login is kept.
+  Over a private DevTools pipe (`--remote-debugging-pipe`, no TCP port) it injects a hook that forwards
+  every WhatsApp notification to `notify-send`. The page reports itself hidden, so chats are not marked as read.
+- Clicking a notification switches that account back to window mode.
 
 ## Configuration
 
@@ -127,7 +142,8 @@ Whatsweb/
 ├── pkgconfig/              # pkg-config workaround (gitignored)
 └── src/
     ├── backend/
-    │   └── app.go          # Backend logic (profile management)
+    │   ├── app.go          # Profiles, bindings, autostart
+    │   └── session.go      # Chrome supervisor, headless mode, notification forwarding
     └── crypto/
         └── encryption.go   # Encryption service
 ```
@@ -144,10 +160,12 @@ Whatsweb/
 
 Go methods are automatically exposed to JavaScript via Wails. Call them like:
 ```javascript
-const result = await window.go.main.App.MethodName(args);
+const result = await window.go.backend.App.MethodName(args);
 ```
 
 ## Auto-start on Login
+
+Easiest: Settings → **Launch at login** (writes `~/.config/autostart/whatsweb.desktop` with `--hidden`).
 
 ### systemd (user service)
 ```ini
@@ -157,7 +175,7 @@ Description=Whatsweb
 After=graphical-session.target
 
 [Service]
-ExecStart=/usr/local/bin/Whatsweb
+ExecStart=/usr/local/bin/Whatsweb --hidden
 Restart=on-failure
 
 [Install]
@@ -179,7 +197,10 @@ systemctl --user enable --now whatsweb
 - Delete `~/.whatsweb/salt` to reset encryption (will lose saved profiles)
 
 ### Multiple instances
-- Only one instance per user should run (profiles locked by encryption)
+- Whatsweb is single-instance: launching it again shows the running dashboard.
+
+### No notifications in background
+- Check `notify-send test` works and a Chromium-based browser is installed.
 
 ### "Overriding existing handler for signal 10" warning
 - This is a normal WebKit/JSC warning, not an error. The app works correctly.
