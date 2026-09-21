@@ -3,6 +3,8 @@ package main
 import (
 	"embed"
 	"log"
+	"os"
+	"slices"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -39,11 +41,18 @@ func main() {
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
-		BackgroundColour: &options.RGBA{R: 255, G: 255, B: 255, A: 255},
-		OnStartup:        backendApp.Startup,
-		OnDomReady:       backendApp.DomReady,
-		OnBeforeClose:    backendApp.BeforeClose,
-		OnShutdown:       backendApp.Shutdown,
+		BackgroundColour: &options.RGBA{R: 17, G: 21, B: 24, A: 255},
+		// Closing the dashboard only hides it; Whatsweb keeps supervising sessions
+		// and delivering notifications. Quit from the dashboard to exit.
+		HideWindowOnClose: true,
+		StartHidden:       slices.Contains(os.Args[1:], "--hidden"),
+		SingleInstanceLock: &options.SingleInstanceLock{
+			UniqueId:               "com.whatsweb.app",
+			OnSecondInstanceLaunch: func(options.SecondInstanceData) { backendApp.ShowWindow() },
+		},
+		OnStartup:  backendApp.Startup,
+		OnDomReady: backendApp.DomReady,
+		OnShutdown: backendApp.Shutdown,
 		Bind: []interface{}{
 			backendApp,
 			mainApp,

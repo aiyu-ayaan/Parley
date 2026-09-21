@@ -1,10 +1,12 @@
 package backend
 
 import (
-	"context"
+	"bufio"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"whatsweb/src/crypto"
 )
@@ -40,7 +42,7 @@ func TestAppProfileLifecycle(t *testing.T) {
 		t.Fatalf("Expected 0 profiles initially, got %d", len(profiles))
 	}
 
-	dtos := app.GetProfilesDTO()
+	dtos := app.GetProfiles()
 	if len(dtos) != 0 {
 		t.Fatalf("Expected 0 DTOs initially, got %d", len(dtos))
 	}
@@ -66,7 +68,7 @@ func TestAppProfileLifecycle(t *testing.T) {
 		t.Fatalf("Expected 2 profiles, got %d", len(profiles))
 	}
 
-	dtos = app.GetProfilesDTO()
+	dtos = app.GetProfiles()
 	if len(dtos) != 2 {
 		t.Fatalf("Expected 2 DTOs, got %d", len(dtos))
 	}
@@ -83,7 +85,7 @@ func TestAppProfileLifecycle(t *testing.T) {
 		t.Fatalf("UpdateProfile failed: %v", err)
 	}
 
-	dtos = app.GetProfilesDTO()
+	dtos = app.GetProfiles()
 	foundRenamed := false
 	for _, dto := range dtos {
 		if dto.ID == p1.ID && dto.Name == "Personal Renamed" {
@@ -130,7 +132,7 @@ func TestAppPersistence(t *testing.T) {
 	}
 
 	app2 := NewApp(encService2)
-	app2.Startup(context.Background())
+	app2.loadProfiles()
 
 	profiles := app2.GetProfiles()
 	if len(profiles) != 1 {
@@ -194,26 +196,32 @@ func TestEnsureSessionPreferences(t *testing.T) {
 		t.Fatalf("Failed to parse Preferences: %v", err)
 	}
 
-	bgMode, ok := prefs["background_mode"].(map[string]any)
-	if !ok || bgMode["enabled"] != true {
-		t.Fatalf("Expected background_mode.enabled == true, got %+v", bgMode)
-	}
-
-	// Verify Local State file
-	localStatePath := filepath.Join(tempDir, "Local State")
-	lsData, err := os.ReadFile(localStatePath)
-	if err != nil {
-		t.Fatalf("Failed to read Local State: %v", err)
-	}
-
-	var ls map[string]any
-	if err := json.Unmarshal(lsData, &ls); err != nil {
-		t.Fatalf("Failed to parse Local State: %v", err)
-	}
-
-	lsBgMode, ok := ls["background_mode"].(map[string]any)
-	if !ok || lsBgMode["enabled"] != true {
-		t.Fatalf("Expected Local State background_mode.enabled == true, got %+v", lsBgMode)
+	exc := prefs["profile"].(map[string]any)["content_settings"].(map[string]any)["exceptions"].(map[string]any)
+	n := exc["notifications"].(map[string]any)["https://web.whatsapp.com:443,*"].(map[string]any)
+	if n["setting"] != float64(1) {
+		t.Fatalf("Expected notifications allowed for WhatsApp, got %+v", n)
 	}
 }
 
+// TestCDPCall checks the pipe framing: events before a reply go to onMsg, the reply is decoded.
+func TestCDPCall(t *testing.T) {
+	toChrome, fromGo := io.Pipe()
+	fromChrome, toGo := io.Pipe()
+	go func() {
+		b, _ := bufio.NewReader(toChrome).ReadBytes(0)
+		if !strings.Contains(string(b), `"method":"Browser.getVersion"`) || strings.Contains(string(b), "params") {
+			t.Errorf("unexpected request %q", b)
+		}
+		toGo.Write([]byte(`{"method":"Runtime.bindingCalled","params":{"name":"__wwNotify","payload":"{}"}}` + "\x00"))
+		toGo.Write([]byte(`{"id":1,"result":{"userAgent":"HeadlessChrome/1"}}` + "\x00"))
+	}()
+	var events []string
+	c := &cdp{w: fromGo, r: bufio.NewReader(fromChrome), onMsg: func(m cdpMsg) { events = append(events, m.Method) }}
+	var ver struct{ UserAgent string }
+	if err := c.call("", "Browser.getVersion", nil, &ver); err != nil {
+		t.Fatal(err)
+	}
+	if ver.UserAgent != "HeadlessChrome/1" || len(events) != 1 || events[0] != "Runtime.bindingCalled" {
+		t.Fatalf("got ua=%q events=%v", ver.UserAgent, events)
+	}
+}
