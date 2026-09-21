@@ -13,18 +13,31 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
 
-// session is one profile's supervised Chrome process. It always runs: headless in the
-// background (forwarding notifications), or as an app window while the user has it open.
+// session is one profile's supervised Chrome. It always runs as an app window; in the
+// background that window is minimised (and unmapped on X11), so opening it again is
+// instant because the WhatsApp page never reloads.
 type session struct {
 	cmd        *exec.Cmd
-	window     bool // current process is the visible app window
-	wantWindow bool // next launch should be the app window
-	stopped    bool // user stopped it; supervisor exits
+	page       *page // DevTools handle, nil until the page is set up
+	window     bool  // window is shown
+	wantWindow bool  // show the window once the page is ready
+	stopped    bool  // user stopped it; supervisor exits
 	wake       chan struct{}
+}
+
+// page is the live WhatsApp tab of a session.
+type page struct {
+	mu          sync.Mutex // serialises show/hide
+	c           *cdp
+	target      string
+	session     string // DevTools session attached to the tab
+	windowID    int
+	stateScript string // identifier of the injected __parleyHidden script
 }
 
 // poke cuts short a supervisor's backoff so a start, open or stop acts immediately.
@@ -48,8 +61,10 @@ const (
 )
 
 // notifyHook replaces the page's Notification API so every notification WhatsApp raises
-// is handed to Go, and makes the page believe it is hidden so it notifies and never
-// marks chats as read while nobody is looking.
+// is handed to Go, which shows it with notify-send and opens the account on click. It
+// also makes the page report itself hidden unless Parley has shown the window
+// (window.__parleyHidden === false), so WhatsApp notifies and never marks chats read
+// in the background. Minimising alone doesn't reliably do that on every WM.
 const notifyHook = `(() => {
   const send = (t, o) => { try { window.__wwNotify(JSON.stringify({title: String(t || ''), body: String((o && o.body) || '')})); } catch (e) {} };
   class N extends EventTarget {
@@ -60,16 +75,18 @@ const notifyHook = `(() => {
   }
   window.Notification = N;
   if (window.ServiceWorkerRegistration) ServiceWorkerRegistration.prototype.showNotification = function (t, o) { send(t, o); return Promise.resolve(); };
-  Object.defineProperty(Document.prototype, 'hidden', {get: () => true});
-  Object.defineProperty(Document.prototype, 'visibilityState', {get: () => 'hidden'});
-  Document.prototype.hasFocus = () => false;
+  const P = Document.prototype, hid = Object.getOwnPropertyDescriptor(P, 'hidden').get, focus = P.hasFocus;
+  const off = (d) => window.__parleyHidden !== false || hid.call(d);
+  Object.defineProperty(P, 'hidden', {configurable: true, get() { return off(this); }});
+  Object.defineProperty(P, 'visibilityState', {configurable: true, get() { return off(this) ? 'hidden' : 'visible'; }});
+  P.hasFocus = function () { return !off(this) && focus.call(this); };
 })();`
 
 func (a *App) sessionDir(id string) string {
 	return filepath.Join(a.encryptionService.DataDir(), "sessions", id)
 }
 
-// startSession starts (or reuses) the supervisor for a profile.
+// startSession starts the supervisor for a profile, or wakes the existing one.
 func (a *App) startSession(id string, window bool) {
 	a.procMu.Lock()
 	defer a.procMu.Unlock()
@@ -79,9 +96,10 @@ func (a *App) startSession(id string, window bool) {
 	if s, ok := a.sessions[id]; ok {
 		s.stopped = false
 		s.poke()
-		if window && !s.window {
+		if window && s.page != nil {
+			go a.setVisible(id, true)
+		} else if window {
 			s.wantWindow = true
-			killGroup(s.cmd) // supervisor relaunches it as a window
 		}
 		return
 	}
@@ -89,8 +107,8 @@ func (a *App) startSession(id string, window bool) {
 	go a.supervise(id)
 }
 
-// supervise keeps a profile's Chrome alive until it is stopped. When the window is
-// closed, Chrome exits and the loop brings it straight back up headless.
+// supervise keeps a profile's Chrome alive until it is stopped. Closing the window
+// quits Chrome, and the loop brings it straight back up hidden.
 func (a *App) supervise(id string) {
 	backoff := minBackoff
 	for {
@@ -102,11 +120,9 @@ func (a *App) supervise(id string) {
 			a.emitStatus(id)
 			return
 		}
-		window := s.wantWindow
-		s.wantWindow = false
 		a.procMu.Unlock()
 
-		cmd, err := a.launch(id, window)
+		cmd, err := a.launch(id, s)
 		if err != nil {
 			log.Printf("session %s: launch failed: %v (retry in %s)", id, err, backoff)
 			s.sleep(backoff)
@@ -115,7 +131,7 @@ func (a *App) supervise(id string) {
 		}
 
 		a.procMu.Lock()
-		s.cmd, s.window = cmd, window
+		s.cmd = cmd
 		a.procMu.Unlock()
 		a.emitStatus(id)
 
@@ -123,8 +139,8 @@ func (a *App) supervise(id string) {
 		_ = cmd.Wait()
 
 		a.procMu.Lock()
-		s.cmd, s.window = nil, false
-		requested := s.wantWindow || s.stopped || a.shuttingDown
+		s.cmd, s.page, s.window = nil, nil, false
+		requested := s.stopped || a.shuttingDown
 		a.procMu.Unlock()
 		a.emitStatus(id)
 
@@ -140,9 +156,8 @@ func (a *App) supervise(id string) {
 	}
 }
 
-// launch starts Chrome for the profile, either as an app window or headless with a
-// DevTools pipe used to capture notifications.
-func (a *App) launch(id string, window bool) (*exec.Cmd, error) {
+// launch starts Chrome for the profile as an app window driven over a DevTools pipe.
+func (a *App) launch(id string, s *session) (*exec.Cmd, error) {
 	a.mu.RLock()
 	p, ok := a.profiles[id]
 	a.mu.RUnlock()
@@ -176,15 +191,23 @@ func (a *App) launch(id string, window bool) (*exec.Cmd, error) {
 		"--disable-sync",
 		"--disable-default-apps",
 		"--disable-component-update",
+		"--disable-extensions",
+		"--disable-background-networking",
+		// Commands on fd 3, replies on fd 4. No TCP port, so no other local process
+		// can drive the session.
+		"--remote-debugging-pipe",
+		"--app=about:blank",
+		"--class=" + windowClass(id),
+		"--window-size=1100,800",
 	}
-	if window {
-		cmd := exec.Command(chrome, append(args, "--app="+url, "--class=parley-"+id)...)
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		return cmd, cmd.Start()
+	a.procMu.Lock()
+	hidden := !s.wantWindow
+	a.procMu.Unlock()
+	if hidden {
+		// Start off-screen so a background launch doesn't flash a window.
+		args = append(args, "--window-position="+strconv.Itoa(offscreen)+","+strconv.Itoa(offscreen))
 	}
 
-	// --remote-debugging-pipe: Chrome reads commands on fd 3 and writes on fd 4.
-	// No TCP port, so no other local process can drive the session.
 	inR, inW, err := os.Pipe()
 	if err != nil {
 		return nil, err
@@ -195,9 +218,7 @@ func (a *App) launch(id string, window bool) (*exec.Cmd, error) {
 		inW.Close()
 		return nil, err
 	}
-	// Background sessions only need to receive messages: no images, extensions or
-	// background fetches.
-	cmd := exec.Command(chrome, append(args, backgroundArgs...)...)
+	cmd := exec.Command(chrome, args...)
 	cmd.ExtraFiles = []*os.File{inR, outW}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	err = cmd.Start()
@@ -208,31 +229,190 @@ func (a *App) launch(id string, window bool) (*exec.Cmd, error) {
 		outR.Close()
 		return nil, err
 	}
+
+	c := newCDP(inW, a.onEvent(id))
 	go func() {
 		defer inW.Close()
-		defer outR.Close()
-		if err := a.watchNotifications(id, url, inW, outR); err != nil && !errors.Is(err, io.EOF) {
+		if err := c.readLoop(outR); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, os.ErrClosed) {
 			log.Printf("session %s: devtools: %v", id, err)
+		}
+		outR.Close()
+	}()
+	go func() {
+		pg, err := setupPage(c, url)
+		if err != nil {
+			log.Printf("session %s: page setup: %v", id, err)
+			killGroup(cmd)
+			return
+		}
+		a.procMu.Lock()
+		if s.cmd != nil && s.cmd != cmd {
+			a.procMu.Unlock()
+			return
+		}
+		s.page = pg
+		show := s.wantWindow
+		s.wantWindow = false
+		a.procMu.Unlock()
+		if err := a.setVisible(id, show); err != nil {
+			log.Printf("session %s: window: %v", id, err)
 		}
 	}()
 	return cmd, nil
 }
 
-var backgroundArgs = []string{
-	"--headless=new",
-	"--remote-debugging-pipe",
-	"--mute-audio",
-	"--blink-settings=imagesEnabled=false",
-	"--disable-extensions",
-	"--disable-background-networking",
+const offscreen = -32000
+
+func windowClass(id string) string { return "parley-" + id }
+
+func (a *App) onEvent(id string) func(cdpMsg) {
+	return func(m cdpMsg) {
+		if m.Method != "Runtime.bindingCalled" {
+			return
+		}
+		var ev struct{ Name, Payload string }
+		var n struct{ Title, Body string }
+		if json.Unmarshal(m.Params, &ev) == nil && ev.Name == "__wwNotify" && json.Unmarshal([]byte(ev.Payload), &n) == nil {
+			go a.desktopNotify(id, n.Title, n.Body)
+		}
+	}
 }
 
-// cdp is a minimal synchronous DevTools client over Chrome's NUL-delimited pipe.
+// setupPage takes the app window's blank tab, installs the notification hook and
+// opens WhatsApp in it.
+func setupPage(c *cdp, url string) (*page, error) {
+	var target string
+	for i := 0; target == "" && i < 50; i++ {
+		var r struct {
+			TargetInfos []struct {
+				TargetID string `json:"targetId"`
+				Type     string `json:"type"`
+			} `json:"targetInfos"`
+		}
+		if err := c.call("", "Target.getTargets", nil, &r); err != nil {
+			return nil, err
+		}
+		for _, t := range r.TargetInfos {
+			if t.Type == "page" {
+				target = t.TargetID
+				break
+			}
+		}
+		if target == "" {
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	if target == "" {
+		return nil, errors.New("no page target")
+	}
+	var attached struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := c.call("", "Target.attachToTarget", map[string]any{"targetId": target, "flatten": true}, &attached); err != nil {
+		return nil, err
+	}
+	sid := attached.SessionID
+	for _, st := range []struct {
+		method string
+		params any
+	}{
+		{"Runtime.addBinding", map[string]any{"name": "__wwNotify"}},
+		{"Runtime.enable", nil},
+		{"Page.enable", nil},
+		{"Page.addScriptToEvaluateOnNewDocument", map[string]any{"source": notifyHook}},
+		{"Page.navigate", map[string]any{"url": url}},
+	} {
+		if err := c.call(sid, st.method, st.params, nil); err != nil {
+			return nil, err
+		}
+	}
+	var w struct {
+		WindowID int `json:"windowId"`
+	}
+	if err := c.call("", "Browser.getWindowForTarget", map[string]any{"targetId": target}, &w); err != nil {
+		return nil, err
+	}
+	return &page{c: c, target: target, session: sid, windowID: w.WindowID}, nil
+}
+
+// setVisible shows or hides a running session's window. Hidden means minimised, which
+// also makes the page report itself hidden so WhatsApp notifies and doesn't mark chats
+// read. On X11 the window is unmapped too, so it leaves the taskbar.
+func (a *App) setVisible(id string, visible bool) error {
+	a.procMu.Lock()
+	s := a.sessions[id]
+	var p *page
+	if s != nil {
+		p = s.page
+	}
+	a.procMu.Unlock()
+	if p == nil {
+		return errors.New("session not ready")
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if err := p.setHidden(!visible); err != nil {
+		return err
+	}
+	bounds := func(b map[string]any) error {
+		return p.c.call("", "Browser.setWindowBounds", map[string]any{"windowId": p.windowID, "bounds": b}, nil)
+	}
+	if visible {
+		x11Window(id, "windowmap")
+		if err := bounds(map[string]any{"windowState": "normal"}); err != nil {
+			return err
+		}
+		var cur struct {
+			Bounds struct{ Left, Top int } `json:"bounds"`
+		}
+		if p.c.call("", "Browser.getWindowBounds", map[string]any{"windowId": p.windowID}, &cur) == nil && cur.Bounds.Left <= offscreen/2 {
+			_ = bounds(map[string]any{"left": 120, "top": 80})
+		}
+		_ = p.c.call("", "Target.activateTarget", map[string]any{"targetId": p.target}, nil)
+		x11Window(id, "windowactivate")
+	} else {
+		if err := bounds(map[string]any{"windowState": "minimized"}); err != nil {
+			return err
+		}
+		x11Window(id, "windowunmap")
+	}
+
+	a.procMu.Lock()
+	if s.page == p {
+		s.window = visible
+	}
+	a.procMu.Unlock()
+	a.emitStatus(id)
+	return nil
+}
+
+// setHidden tells the page whether it is hidden, now and after any reload.
+func (p *page) setHidden(hidden bool) error {
+	js := fmt.Sprintf("window.__parleyHidden = %t", hidden)
+	if p.stateScript != "" {
+		_ = p.c.call(p.session, "Page.removeScriptToEvaluateOnNewDocument", map[string]any{"identifier": p.stateScript}, nil)
+	}
+	var added struct {
+		Identifier string `json:"identifier"`
+	}
+	if err := p.c.call(p.session, "Page.addScriptToEvaluateOnNewDocument", map[string]any{"source": js}, &added); err != nil {
+		return err
+	}
+	p.stateScript = added.Identifier
+	return p.c.call(p.session, "Runtime.evaluate", map[string]any{
+		"expression": js + "; document.dispatchEvent(new Event('visibilitychange')); window.dispatchEvent(new Event('" + map[bool]string{true: "blur", false: "focus"}[hidden] + "'))",
+	}, nil)
+}
+
+// cdp is a minimal DevTools client over Chrome's NUL-delimited pipe. Calls may come
+// from any goroutine; readLoop routes replies to them and events to onEvent.
 type cdp struct {
-	w      io.Writer
-	r      *bufio.Reader
-	nextID int
-	onMsg  func(cdpMsg)
+	mu      sync.Mutex
+	w       io.Writer
+	nextID  int
+	pending map[int]chan cdpMsg
+	onEvent func(cdpMsg)
 }
 
 type cdpMsg struct {
@@ -245,40 +425,74 @@ type cdpMsg struct {
 	} `json:"error"`
 }
 
-func (c *cdp) read() (cdpMsg, error) {
-	var m cdpMsg
-	b, err := c.r.ReadBytes(0)
-	if err != nil {
-		return m, err
-	}
-	return m, json.Unmarshal(b[:len(b)-1], &m)
+func newCDP(w io.Writer, onEvent func(cdpMsg)) *cdp {
+	return &cdp{w: w, pending: map[int]chan cdpMsg{}, onEvent: onEvent}
 }
 
-// call sends a command and waits for its reply, passing any events seen meanwhile to onMsg.
+func (c *cdp) readLoop(r io.Reader) error {
+	br := bufio.NewReader(r)
+	defer func() {
+		c.mu.Lock()
+		for id, ch := range c.pending {
+			close(ch)
+			delete(c.pending, id)
+		}
+		c.pending = nil
+		c.mu.Unlock()
+	}()
+	for {
+		b, err := br.ReadBytes(0)
+		if err != nil {
+			return err
+		}
+		var m cdpMsg
+		if json.Unmarshal(b[:len(b)-1], &m) != nil {
+			continue
+		}
+		if m.ID == 0 {
+			c.onEvent(m)
+			continue
+		}
+		c.mu.Lock()
+		ch := c.pending[m.ID]
+		delete(c.pending, m.ID)
+		c.mu.Unlock()
+		if ch != nil {
+			ch <- m
+		}
+	}
+}
+
+// call sends a command and waits for its reply.
 func (c *cdp) call(session, method string, params any, out any) error {
-	c.nextID++
-	msg := map[string]any{"id": c.nextID, "method": method}
+	msg := map[string]any{"method": method}
 	if params != nil {
 		msg["params"] = params
 	}
 	if session != "" {
 		msg["sessionId"] = session
 	}
+	ch := make(chan cdpMsg, 1)
+	c.mu.Lock()
+	if c.pending == nil {
+		c.mu.Unlock()
+		return io.EOF
+	}
+	c.nextID++
+	msg["id"] = c.nextID
+	c.pending[c.nextID] = ch
 	b, err := json.Marshal(msg)
+	if err == nil {
+		_, err = c.w.Write(append(b, 0))
+	}
+	c.mu.Unlock()
 	if err != nil {
 		return err
 	}
-	if _, err := c.w.Write(append(b, 0)); err != nil {
-		return err
-	}
-	for {
-		m, err := c.read()
-		if err != nil {
-			return err
-		}
-		if m.ID != c.nextID {
-			c.onMsg(m)
-			continue
+	select {
+	case m, ok := <-ch:
+		if !ok {
+			return io.EOF
 		}
 		if m.Error != nil {
 			return fmt.Errorf("%s: %s", method, m.Error.Message)
@@ -287,67 +501,8 @@ func (c *cdp) call(session, method string, params any, out any) error {
 			return json.Unmarshal(m.Result, out)
 		}
 		return nil
-	}
-}
-
-// watchNotifications opens WhatsApp in the headless browser with the notification hook
-// installed, then turns every hooked notification into a desktop notification.
-func (a *App) watchNotifications(id, url string, w io.Writer, r io.Reader) error {
-	c := &cdp{w: w, r: bufio.NewReader(r)}
-	c.onMsg = func(m cdpMsg) {
-		if m.Method != "Runtime.bindingCalled" {
-			return
-		}
-		var ev struct{ Name, Payload string }
-		var n struct{ Title, Body string }
-		if json.Unmarshal(m.Params, &ev) == nil && ev.Name == "__wwNotify" && json.Unmarshal([]byte(ev.Payload), &n) == nil {
-			go a.desktopNotify(id, n.Title, n.Body)
-		}
-	}
-
-	var ver struct {
-		UserAgent string `json:"userAgent"`
-	}
-	if err := c.call("", "Browser.getVersion", nil, &ver); err != nil {
-		return err
-	}
-	var target struct {
-		TargetID string `json:"targetId"`
-	}
-	if err := c.call("", "Target.createTarget", map[string]any{"url": "about:blank"}, &target); err != nil {
-		return err
-	}
-	var attached struct {
-		SessionID string `json:"sessionId"`
-	}
-	if err := c.call("", "Target.attachToTarget", map[string]any{"targetId": target.TargetID, "flatten": true}, &attached); err != nil {
-		return err
-	}
-	s := attached.SessionID
-	// WhatsApp refuses "HeadlessChrome", so present as the regular browser.
-	ua := strings.ReplaceAll(ver.UserAgent, "HeadlessChrome", "Chrome")
-	steps := []struct {
-		method string
-		params any
-	}{
-		{"Emulation.setUserAgentOverride", map[string]any{"userAgent": ua}},
-		{"Runtime.addBinding", map[string]any{"name": "__wwNotify"}},
-		{"Runtime.enable", nil},
-		{"Page.enable", nil},
-		{"Page.addScriptToEvaluateOnNewDocument", map[string]any{"source": notifyHook}},
-		{"Page.navigate", map[string]any{"url": url}},
-	}
-	for _, st := range steps {
-		if err := c.call(s, st.method, st.params, nil); err != nil {
-			return err
-		}
-	}
-	for {
-		m, err := c.read()
-		if err != nil {
-			return err
-		}
-		c.onMsg(m)
+	case <-time.After(15 * time.Second):
+		return fmt.Errorf("%s: timed out", method)
 	}
 }
 
@@ -416,13 +571,16 @@ func findChrome() (string, error) {
 	return "", errors.New("no Chromium-based browser found (install google-chrome or chromium)")
 }
 
-// focusWindow raises an already open profile window if a window tool is available.
-func focusWindow(id string) {
-	if _, err := exec.LookPath("xdotool"); err == nil {
-		_ = exec.Command("xdotool", "search", "--classname", "parley-"+id, "windowactivate").Run()
-	} else if _, err := exec.LookPath("wmctrl"); err == nil {
-		_ = exec.Command("wmctrl", "-x", "-a", "parley-"+id).Run()
+// x11Window runs an xdotool window command (windowmap, windowunmap, windowactivate) on
+// the session's window. No-op without X11 or xdotool; minimising still works then.
+func x11Window(id, command string) {
+	if os.Getenv("DISPLAY") == "" {
+		return
 	}
+	if _, err := exec.LookPath("xdotool"); err != nil {
+		return
+	}
+	_ = exec.Command("xdotool", "search", "--class", windowClass(id), command, "%@").Run()
 }
 
 // ensureSessionPreferences pre-grants notifications and sound to WhatsApp so the app

@@ -203,7 +203,7 @@ func TestEnsureSessionPreferences(t *testing.T) {
 	}
 }
 
-// TestCDPCall checks the pipe framing: events before a reply go to onMsg, the reply is decoded.
+// TestCDPCall checks the pipe framing: events go to onEvent, replies reach their caller.
 func TestCDPCall(t *testing.T) {
 	toChrome, fromGo := io.Pipe()
 	fromChrome, toGo := io.Pipe()
@@ -213,15 +213,23 @@ func TestCDPCall(t *testing.T) {
 			t.Errorf("unexpected request %q", b)
 		}
 		toGo.Write([]byte(`{"method":"Runtime.bindingCalled","params":{"name":"__wwNotify","payload":"{}"}}` + "\x00"))
-		toGo.Write([]byte(`{"id":1,"result":{"userAgent":"HeadlessChrome/1"}}` + "\x00"))
+		toGo.Write([]byte(`{"id":1,"result":{"userAgent":"Chrome/1"}}` + "\x00"))
 	}()
-	var events []string
-	c := &cdp{w: fromGo, r: bufio.NewReader(fromChrome), onMsg: func(m cdpMsg) { events = append(events, m.Method) }}
+	events := make(chan string, 1)
+	c := newCDP(fromGo, func(m cdpMsg) { events <- m.Method })
+	done := make(chan error, 1)
+	go func() { done <- c.readLoop(fromChrome) }()
 	var ver struct{ UserAgent string }
 	if err := c.call("", "Browser.getVersion", nil, &ver); err != nil {
 		t.Fatal(err)
 	}
-	if ver.UserAgent != "HeadlessChrome/1" || len(events) != 1 || events[0] != "Runtime.bindingCalled" {
-		t.Fatalf("got ua=%q events=%v", ver.UserAgent, events)
+	if ev := <-events; ver.UserAgent != "Chrome/1" || ev != "Runtime.bindingCalled" {
+		t.Fatalf("got ua=%q event=%q", ver.UserAgent, ev)
+	}
+	// Once the pipe closes, pending and later calls fail instead of hanging.
+	toGo.Close()
+	<-done
+	if err := c.call("", "Browser.getVersion", nil, nil); err != io.EOF {
+		t.Fatalf("call after close = %v, want EOF", err)
 	}
 }

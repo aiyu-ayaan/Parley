@@ -257,24 +257,19 @@ func (a *App) OpenProfile(id string) error {
 	a.SetActiveProfile(id)
 	a.procMu.Lock()
 	s := a.sessions[id]
-	open := s != nil && s.window
+	ready := s != nil && s.page != nil
 	a.procMu.Unlock()
-	if open {
-		focusWindow(id)
-		return nil
+	if ready {
+		return a.setVisible(id, true)
 	}
+	// Not running yet, or still loading: show it as soon as the page is up.
 	a.startSession(id, true)
 	return nil
 }
 
-// HideProfileWindow closes the window; the session keeps running headless.
+// HideProfileWindow hides the window; the session keeps running in the background.
 func (a *App) HideProfileWindow(id string) error {
-	a.procMu.Lock()
-	defer a.procMu.Unlock()
-	if s := a.sessions[id]; s != nil && s.window {
-		killGroup(s.cmd)
-	}
-	return nil
+	return a.setVisible(id, false)
 }
 
 // StartProfile starts a stopped profile in the background.

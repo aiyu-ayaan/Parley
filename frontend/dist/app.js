@@ -29,7 +29,7 @@ function mode(id) {
 
 const MODE_TEXT = {
     window: ['Window open', 'WhatsApp is open in its own window.'],
-    background: ['Background', 'Running headless. Message and call notifications are on.'],
+    background: ['Background', 'Hidden and still loaded, so it opens instantly. Notifications are on.'],
     stopped: ['Stopped', 'Not running. You won\'t get notifications for this account.'],
 };
 

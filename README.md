@@ -7,7 +7,7 @@ A lightweight Linux desktop application for WhatsApp Web with multi-account supp
 - **Lightweight** - Native desktop app with minimal resource usage
 - **Multi-account support** - Run multiple WhatsApp profiles simultaneously (Discord-style circular UI)
 - **Persistent sessions** - Profiles are saved encrypted, no need to re-login
-- **Always-on background** - Close the window and the account keeps running headless, still notifying
+- **Always-on background** - Hide or close the window and the account keeps running, still notifying
 - **Native notifications** - Desktop notifications for every account; click one to open that account
 - **Auto-start option** - Launch on system startup
 - **Encrypted storage** - All user data stored securely with AES-256 encryption
@@ -17,6 +17,7 @@ A lightweight Linux desktop application for WhatsApp Web with multi-account supp
 - Go 1.21 or later
 - A Chromium-based browser (`google-chrome`, `chromium`, `brave-browser` or `microsoft-edge`)
 - `notify-send` (package `libnotify-bin` / `libnotify`)
+- Optional: `xdotool` (X11) so hidden accounts leave the taskbar
 - Wails v2 CLI (`go install github.com/wailsapp/wails/v2/cmd/wails@latest`)
 - **WebView2 dependencies** (Linux: webkit2gtk-4.1)
 
@@ -94,7 +95,7 @@ parley
 ## Usage
 
 1. **Add an account**: Click `+` in the rail, enter a name (e.g. "Work"). A WhatsApp window opens; scan the QR code.
-2. **Close the WhatsApp window** when done. The account keeps running headless and keeps notifying.
+2. **Send to background** (or close the window) when done. The account keeps running and notifying.
 3. **Accounts rail**: click an avatar to manage it, double-click to open its window. The dot shows state:
    green = window open, blue = background, grey = stopped.
 4. **Rename** by editing the name in the account panel. **Remove** logs out and deletes its data.
@@ -106,11 +107,11 @@ Closing the Parley dashboard only hides it. Launch Parley again to bring it back
 
 Each account is a Chrome process with its own data dir (`~/.parley/sessions/<id>`), supervised by Parley:
 
-- **Window open**: `chrome --app=https://web.whatsapp.com`. Chrome shows notifications itself.
-- **Window closed**: Chrome exits, and Parley relaunches it `--headless=new` on the same data dir, so the login is kept.
-  Over a private DevTools pipe (`--remote-debugging-pipe`, no TCP port) it injects a hook that forwards
-  every WhatsApp notification to `notify-send`. The page reports itself hidden, so chats are not marked as read.
-- Clicking a notification switches that account back to window mode.
+- One `chrome --app` window per account, driven over a private DevTools pipe (`--remote-debugging-pipe`, no TCP port).
+- **Background**: the window is minimised and, on X11 with `xdotool`, unmapped so it leaves the taskbar. The page stays
+  loaded, so **Open** shows it instantly. The page reports itself hidden, so chats are not marked as read.
+- **Window closed**: Chrome exits, and Parley relaunches it hidden on the same data dir, so the login is kept.
+- A hook forwards every WhatsApp notification to `notify-send`; clicking one opens that account's window.
 
 ## Configuration
 
@@ -143,7 +144,7 @@ Parley/
 └── src/
     ├── backend/
     │   ├── app.go          # Profiles, bindings, autostart
-    │   └── session.go      # Chrome supervisor, headless mode, notification forwarding
+    │   └── session.go      # Chrome supervisor, show/hide, notification forwarding
     └── crypto/
         └── encryption.go   # Encryption service
 ```
