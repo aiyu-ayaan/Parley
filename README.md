@@ -93,6 +93,15 @@ Or install it (binary, icon and app-menu entry under `~/.local`, no sudo):
 ```
 Release tarballs ship the same `install.sh`.
 
+Or install the latest release without cloning (Linux x86_64):
+```bash
+curl -fsSL https://raw.githubusercontent.com/aiyu-ayaan/Whatsweb/master/scripts/install-linux.sh | sh
+# ... | sh -s -- --channel beta     newest beta (falls back to alpha)
+# ... | sh -s -- --channel alpha    newest alpha
+# ... | sh -s -- --uninstall        remove it; account data is kept
+```
+With no channel it installs stable, falling back to beta, then alpha when no stable release exists yet.
+
 ## Usage
 
 1. **Add an account**: Click `+` in the rail, enter a name (e.g. "Work"). A WhatsApp window opens; scan the QR code.
