@@ -238,17 +238,12 @@ func (a *App) launch(id string, s *session) (*exec.Cmd, error) {
 	show := s.wantWindow
 	a.procMu.Unlock()
 	go func() {
-		// Report new windows' tabs, so adoptPage can take the app window openWindow asks for.
-		err := c.call("", "Target.setAutoAttach", map[string]any{
-			"autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true,
-			"filter": []map[string]any{{"type": "page"}, {"exclude": true}},
-		}, nil)
-		if err == nil {
-			if show {
-				err = a.openWindow(id)
-			} else {
-				err = a.openHidden(id)
-			}
+		// Target events (targetDestroyed) tell pageGone when the WhatsApp tab vanishes.
+		err := c.call("", "Target.setDiscoverTargets", map[string]any{"discover": true}, nil)
+		if err == nil && show {
+			err = a.openWindow(id)
+		} else if err == nil {
+			err = a.openHidden(id)
 		}
 		if err != nil {
 			log.Printf("session %s: setup: %v", id, err)
@@ -302,7 +297,7 @@ const windowStub = "data:text/html,<title>WhatsApp</title><body style=background
 
 // openWindow asks the running Chrome for a WhatsApp app window. There is no DevTools
 // command for app windows, so it launches Chrome again with --app: that instance hands
-// the request to the running one and exits. adoptPage picks the new tab up.
+// the request to the running one and exits. The new tab is then found by its stub URL.
 func (a *App) openWindow(id string) error {
 	a.procMu.Lock()
 	s := a.sessions[id]
@@ -321,13 +316,54 @@ func (a *App) openWindow(id string) error {
 	s.expect = "window"
 	a.procMu.Unlock()
 
+	err := a.handoffWindow(id, p)
+	a.procMu.Lock()
+	if s.expect == "window" {
+		s.expect = "" // never leave a stale claim that blocks the next Open
+	}
+	a.procMu.Unlock()
+	return err
+}
+
+func (a *App) handoffWindow(id string, p *Profile) error {
+	a.procMu.Lock()
+	c := a.sessions[id].c
+	a.procMu.Unlock()
 	chrome, err := findChrome()
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	return exec.CommandContext(ctx, chrome, "--user-data-dir="+a.sessionDir(id), "--class="+windowClass(id), "--app="+windowStub).Run()
+	if err := exec.CommandContext(ctx, chrome, "--user-data-dir="+a.sessionDir(id), "--class="+windowClass(id), "--app="+windowStub).Run(); err != nil {
+		return err
+	}
+	for i := 0; i < 100; i++ {
+		var r struct {
+			TargetInfos []struct {
+				TargetID string `json:"targetId"`
+				Type     string `json:"type"`
+				URL      string `json:"url"`
+			} `json:"targetInfos"`
+		}
+		if err := c.call("", "Target.getTargets", nil, &r); err != nil {
+			return err
+		}
+		for _, t := range r.TargetInfos {
+			if t.Type == "page" && strings.HasPrefix(t.URL, "data:text/html,") && strings.Contains(t.URL, "WhatsApp") {
+				var at struct {
+					SessionID string `json:"sessionId"`
+				}
+				if err := c.call("", "Target.attachToTarget", map[string]any{"targetId": t.TargetID, "flatten": true}, &at); err != nil {
+					return err
+				}
+				a.adoptPage(id, c, at.SessionID, t.TargetID, "window")
+				return nil
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return errors.New("app window did not appear")
 }
 
 // adoptPage installs the hooks in a new blank tab, makes it the session's WhatsApp page
@@ -341,6 +377,8 @@ func (a *App) adoptPage(id string, c *cdp, sid, target, kind string) {
 	a.mu.RUnlock()
 	if s == nil || s.c != c || s.expect != kind || prof == nil {
 		a.procMu.Unlock()
+		// Superseded (e.g. Open while the background tab was being set up): drop it.
+		_ = c.call("", "Target.closeTarget", map[string]any{"targetId": target}, nil)
 		return
 	}
 	s.expect = ""
@@ -426,19 +464,11 @@ func (a *App) onEvent(id string, c *cdp) func(cdpMsg) {
 	navigating := map[string]bool{}
 	return func(m cdpMsg) {
 		var p struct {
-			Name, Payload, FrameID, Type, SessionID, TargetID string
-			Frame                                             struct{ ID string }
-			TargetInfo                                        struct {
-				TargetID string `json:"targetId"`
-				URL      string `json:"url"`
-			}
+			Name, Payload, FrameID, Type, TargetID string
+			Frame                                  struct{ ID string }
 		}
 		_ = json.Unmarshal(m.Params, &p)
 		switch m.Method {
-		case "Target.attachedToTarget":
-			if strings.HasPrefix(p.TargetInfo.URL, "data:text/html,<title>WhatsApp</title>") {
-				go a.adoptPage(id, c, p.SessionID, p.TargetInfo.TargetID, "window")
-			}
 		case "Target.targetDestroyed":
 			go a.pageGone(id, c, p.TargetID)
 		case "Runtime.bindingCalled":
@@ -734,7 +764,7 @@ func x11Window(id, command string) {
 }
 
 // ensureSessionPreferences pre-grants notifications and sound to WhatsApp so the app
-// window notifies without prompting.
+// window notifies without prompting, and keeps hidden tabs allowed.
 func ensureSessionPreferences(sessionDir string) error {
 	defaultDir := filepath.Join(sessionDir, "Default")
 	if err := os.MkdirAll(defaultDir, 0700); err != nil {
@@ -745,6 +775,10 @@ func ensureSessionPreferences(sessionDir string) error {
 	if data, err := os.ReadFile(prefsPath); err == nil {
 		_ = json.Unmarshal(data, &prefs)
 	}
+	// Chrome refuses hidden (windowless) tabs on a profile whose saved extension state
+	// is loaded at startup ("only when remote debugging is enabled"). Extensions are
+	// disabled anyway and Chrome rebuilds the built-in entries, so drop it.
+	delete(child(prefs, "extensions"), "settings")
 	exceptions := child(child(child(prefs, "profile"), "content_settings"), "exceptions")
 	for _, k := range []string{"notifications", "sound"} {
 		child(exceptions, k)["https://web.whatsapp.com:443,*"] = map[string]any{"setting": 1}

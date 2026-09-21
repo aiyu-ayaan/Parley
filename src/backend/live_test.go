@@ -171,4 +171,26 @@ func TestLiveWindow(t *testing.T) {
 	a.CloseProfile(p.ID)
 	time.Sleep(2 * time.Second)
 	t.Logf("stopped: %+v", a.GetProfileStatus(p.ID))
+
+	// Second launch on the now-used profile, opened while the hidden tab is being set up.
+	a.startSession(p.ID, false)
+	time.Sleep(300 * time.Millisecond)
+	a.OpenProfile(p.ID)
+	for i := 0; i < 400 && !a.GetProfileStatus(p.ID).HasWindow; i++ {
+		time.Sleep(25 * time.Millisecond)
+	}
+	time.Sleep(time.Second)
+	a.procMu.Lock()
+	cur := a.sessions[p.ID].page
+	a.procMu.Unlock()
+	var href struct{ Result struct{ Value string } }
+	if cur != nil {
+		cur.c.call(cur.session, "Runtime.evaluate", map[string]any{"expression": "location.href"}, &href)
+	}
+	t.Logf("open during startup: status=%+v, page=%q, windows=%d", a.GetProfileStatus(p.ID), href.Result.Value, mapped(p.ID))
+	if !a.GetProfileStatus(p.ID).HasWindow || strings.HasPrefix(href.Result.Value, "data:") {
+		t.Error("window stuck or missing when opened during startup")
+	}
+	a.CloseProfile(p.ID)
+	time.Sleep(2 * time.Second)
 }
