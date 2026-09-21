@@ -1,6 +1,6 @@
-# Whatsweb
+# Parley
 
-Whatsweb as a linux desktop app that can open the Whatsapp web as a app. This app exist because Whatsapp don't have native support of its app.
+Parley (formerly Whatsweb) is a linux desktop app that opens WhatsApp Web as an app. This app exists because WhatsApp has no native Linux app. The name avoids the WhatsApp trademark; "WhatsApp" only appears where it describes the service.
 
 ## Core Feature
 

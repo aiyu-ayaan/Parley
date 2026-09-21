@@ -19,7 +19,7 @@ Thumbs.db
 # Wails
 
 # Encrypted data (user-specific)
-~/.whatsweb/
+~/.parley/
 
 # Logs
 *.log

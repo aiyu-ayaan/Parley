@@ -1,6 +1,6 @@
 {
-  "name": "Whatsweb",
-  "outputfilename": "Whatsweb",
+  "name": "Parley",
+  "outputfilename": "parley",
   "frontend:install": "echo 'No frontend install needed'",
   "frontend:build": "echo 'No frontend build needed'",
 
@@ -9,8 +9,8 @@
     "email": "aiyu@example.com"
   },
   "info": {
-    "companyName": "Whatsweb",
-    "productName": "Whatsweb",
+    "companyName": "Parley",
+    "productName": "Parley",
     "productVersion": "1.0.0",
     "copyright": "Copyright © 2024 aiyu. All rights reserved."
   },

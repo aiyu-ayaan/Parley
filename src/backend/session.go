@@ -146,7 +146,7 @@ func (a *App) launch(id string, window bool) (*exec.Cmd, error) {
 		"--password-store=basic",
 	}
 	if window {
-		cmd := exec.Command(chrome, append(args, "--app="+url, "--class=whatsweb-"+id)...)
+		cmd := exec.Command(chrome, append(args, "--app="+url, "--class=parley-"+id)...)
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		return cmd, cmd.Start()
 	}
@@ -328,7 +328,7 @@ func (a *App) desktopNotify(id, title, body string) {
 	}
 }
 
-// evictStale stops a leftover Chrome (e.g. from an older Whatsweb run) that still owns
+// evictStale stops a leftover Chrome (e.g. from an older Parley run) that still owns
 // the session dir. Otherwise Chrome's singleton handoff swallows our launch and opens a
 // window in the old process on every retry.
 func evictStale(dir string) {
@@ -372,9 +372,9 @@ func findChrome() (string, error) {
 // focusWindow raises an already open profile window if a window tool is available.
 func focusWindow(id string) {
 	if _, err := exec.LookPath("xdotool"); err == nil {
-		_ = exec.Command("xdotool", "search", "--classname", "whatsweb-"+id, "windowactivate").Run()
+		_ = exec.Command("xdotool", "search", "--classname", "parley-"+id, "windowactivate").Run()
 	} else if _, err := exec.LookPath("wmctrl"); err == nil {
-		_ = exec.Command("wmctrl", "-x", "-a", "whatsweb-"+id).Run()
+		_ = exec.Command("wmctrl", "-x", "-a", "parley-"+id).Run()
 	}
 }
 

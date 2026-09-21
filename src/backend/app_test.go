@@ -8,12 +8,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"whatsweb/src/crypto"
+	"parley/src/crypto"
 )
 
 func createTestApp(t *testing.T) (*App, func()) {
 	t.Helper()
-	tempDir, err := os.MkdirTemp("", "whatsweb-backend-test-*")
+	tempDir, err := os.MkdirTemp("", "parley-backend-test-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestAppProfileLifecycle(t *testing.T) {
 }
 
 func TestAppPersistence(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "whatsweb-persistence-test-*")
+	tempDir, err := os.MkdirTemp("", "parley-persistence-test-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestAppWebviewManagement(t *testing.T) {
 }
 
 func TestEnsureSessionPreferences(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "whatsweb-prefs-test-*")
+	tempDir, err := os.MkdirTemp("", "parley-prefs-test-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}

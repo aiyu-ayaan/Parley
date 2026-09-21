@@ -12,7 +12,7 @@ import (
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
-	"whatsweb/src/crypto"
+	"parley/src/crypto"
 )
 
 // Profile represents a WhatsApp Web profile
@@ -49,6 +49,12 @@ func NewApp(encryptionService *crypto.EncryptionService) *App {
 func (a *App) Startup(ctx context.Context) {
 	a.ctx = ctx
 	a.loadProfiles()
+	// Replace the autostart entry left by the app's old name (Whatsweb).
+	if home, err := os.UserHomeDir(); err == nil {
+		if os.Remove(filepath.Join(home, ".config", "autostart", "whatsweb.desktop")) == nil {
+			_ = a.SetAutoStart(true)
+		}
+	}
 }
 
 // DomReady is called after the frontend DOM is ready
@@ -340,7 +346,7 @@ func (a *App) emitStatus(id string) {
 	}
 }
 
-// ShowWindow brings the dashboard back (used when Whatsweb is launched again).
+// ShowWindow brings the dashboard back (used when Parley is launched again).
 func (a *App) ShowWindow() {
 	if a.ctx != nil {
 		runtime.WindowShow(a.ctx)
@@ -348,7 +354,7 @@ func (a *App) ShowWindow() {
 	}
 }
 
-// Quit stops every session and exits Whatsweb.
+// Quit stops every session and exits Parley.
 func (a *App) Quit() {
 	if a.ctx != nil {
 		runtime.Quit(a.ctx)
@@ -361,7 +367,7 @@ func (a *App) IsAutoStart() bool {
 	if err != nil {
 		return false
 	}
-	path := filepath.Join(home, ".config", "autostart", "whatsweb.desktop")
+	path := filepath.Join(home, ".config", "autostart", "parley.desktop")
 	_, err = os.Stat(path)
 	return err == nil
 }
@@ -373,7 +379,7 @@ func (a *App) SetAutoStart(enabled bool) error {
 		return err
 	}
 	autostartDir := filepath.Join(home, ".config", "autostart")
-	desktopPath := filepath.Join(autostartDir, "whatsweb.desktop")
+	desktopPath := filepath.Join(autostartDir, "parley.desktop")
 
 	if !enabled {
 		_ = os.Remove(desktopPath)
@@ -392,10 +398,10 @@ func (a *App) SetAutoStart(enabled bool) error {
 	content := fmt.Sprintf(`[Desktop Entry]
 Type=Application
 Version=1.0
-Name=Whatsweb
+Name=Parley
 Comment=WhatsApp Web Desktop Application
 Exec=%s --hidden
-Icon=whatsweb
+Icon=parley
 Terminal=false
 Categories=Network;InstantMessaging;
 StartupNotify=true

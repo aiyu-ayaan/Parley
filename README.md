@@ -1,4 +1,4 @@
-# Whatsweb
+# Parley
 
 A lightweight Linux desktop application for WhatsApp Web with multi-account support, built with Go and Wails v2.
 
@@ -39,7 +39,7 @@ sudo pacman -S webkit2gtk-4.1 gtk3 libayatana-appindicator
 
 ```bash
 # Clone the repository
-git clone <repository-url>
+git clone https://github.com/aiyu-ayaan/Whatsweb.git
 cd Whatsweb
 
 # Install dependencies
@@ -56,7 +56,7 @@ ln -sf /usr/lib/x86_64-linux-gnu/pkgconfig/webkit2gtk-4.1.pc pkgconfig/webkit2gt
 # Or build manually with Wails:
 PKG_CONFIG_PATH=./pkgconfig:$PKG_CONFIG_PATH ~/go/bin/wails build
 
-# Production binary will be in build/bin/Whatsweb
+# Production binary will be in build/bin/parley
 ```
 
 ## Running
@@ -76,19 +76,19 @@ PKG_CONFIG_PATH=./pkgconfig:$PKG_CONFIG_PATH ~/go/bin/wails dev
 ./build.sh
 
 # Run binary
-./build/bin/Whatsweb
+./build/bin/parley
 ```
 
 ### Production
 ```bash
 # After Wails build
-./build/bin/Whatsweb
+./build/bin/parley
 ```
 
 Or install system-wide:
 ```bash
-sudo cp build/bin/Whatsweb /usr/local/bin/
-whatsweb
+sudo cp build/bin/parley /usr/local/bin/
+parley
 ```
 
 ## Usage
@@ -100,21 +100,21 @@ whatsweb
 4. **Rename** by editing the name in the account panel. **Remove** logs out and deletes its data.
 5. **Settings** (top icon): launch at login, and Quit.
 
-Closing the Whatsweb dashboard only hides it. Launch Whatsweb again to bring it back. Use **Settings → Quit** to stop everything.
+Closing the Parley dashboard only hides it. Launch Parley again to bring it back. Use **Settings → Quit** to stop everything.
 
 ## How background works
 
-Each account is a Chrome process with its own data dir (`~/.whatsweb/sessions/<id>`), supervised by Whatsweb:
+Each account is a Chrome process with its own data dir (`~/.parley/sessions/<id>`), supervised by Parley:
 
 - **Window open**: `chrome --app=https://web.whatsapp.com`. Chrome shows notifications itself.
-- **Window closed**: Chrome exits, and Whatsweb relaunches it `--headless=new` on the same data dir, so the login is kept.
+- **Window closed**: Chrome exits, and Parley relaunches it `--headless=new` on the same data dir, so the login is kept.
   Over a private DevTools pipe (`--remote-debugging-pipe`, no TCP port) it injects a hook that forwards
   every WhatsApp notification to `notify-send`. The page reports itself hidden, so chats are not marked as read.
 - Clicking a notification switches that account back to window mode.
 
 ## Configuration
 
-Profiles and encryption keys are stored in `~/.whatsweb/`:
+Profiles and encryption keys are stored in `~/.parley/`:
 - `salt` - Encryption salt (machine-specific)
 - `profile-*.enc` - Encrypted profile data
 
@@ -128,7 +128,7 @@ Profiles and encryption keys are stored in `~/.whatsweb/`:
 ## Project Structure
 
 ```
-Whatsweb/
+Parley/
 ├── main.go                 # Application entry point
 ├── go.mod                  # Go module definition
 ├── README.md               # This file
@@ -154,7 +154,7 @@ Whatsweb/
 
 1. Backend: Add methods to `src/backend/app.go`
 2. Frontend: Modify `frontend/dist/app.js` and `styles.css`
-3. Test: `PKG_CONFIG_PATH=./pkgconfig:$PKG_CONFIG_PATH ~/go/bin/wails build && ./build/bin/Whatsweb`
+3. Test: `PKG_CONFIG_PATH=./pkgconfig:$PKG_CONFIG_PATH ~/go/bin/wails build && ./build/bin/parley`
 
 ### Bindings
 
@@ -165,17 +165,17 @@ const result = await window.go.backend.App.MethodName(args);
 
 ## Auto-start on Login
 
-Easiest: Settings → **Launch at login** (writes `~/.config/autostart/whatsweb.desktop` with `--hidden`).
+Easiest: Settings → **Launch at login** (writes `~/.config/autostart/parley.desktop` with `--hidden`).
 
 ### systemd (user service)
 ```ini
-# ~/.config/systemd/user/whatsweb.service
+# ~/.config/systemd/user/parley.service
 [Unit]
-Description=Whatsweb
+Description=Parley
 After=graphical-session.target
 
 [Service]
-ExecStart=/usr/local/bin/Whatsweb --hidden
+ExecStart=/usr/local/bin/parley --hidden
 Restart=on-failure
 
 [Install]
@@ -183,7 +183,7 @@ WantedBy=default.target
 ```
 
 ```bash
-systemctl --user enable --now whatsweb
+systemctl --user enable --now parley
 ```
 
 ## Troubleshooting
@@ -194,10 +194,10 @@ systemctl --user enable --now whatsweb
 - Try: `wails doctor` to check environment
 
 ### Encryption errors
-- Delete `~/.whatsweb/salt` to reset encryption (will lose saved profiles)
+- Delete `~/.parley/salt` to reset encryption (will lose saved profiles)
 
 ### Multiple instances
-- Whatsweb is single-instance: launching it again shows the running dashboard.
+- Parley is single-instance: launching it again shows the running dashboard.
 
 ### No notifications in background
 - Check `notify-send test` works and a Chromium-based browser is installed.

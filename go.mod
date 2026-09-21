@@ -1,4 +1,4 @@
-module whatsweb
+module parley
 
 go 1.26.0
 

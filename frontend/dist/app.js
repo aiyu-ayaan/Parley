@@ -1,4 +1,4 @@
-// Whatsweb dashboard
+// Parley dashboard
 
 const $ = (id) => document.getElementById(id);
 const api = () => window.go && window.go.backend && window.go.backend.App;

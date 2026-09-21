@@ -8,7 +8,7 @@ import (
 
 func createTestService(t *testing.T) (*EncryptionService, func()) {
 	t.Helper()
-	tempDir, err := os.MkdirTemp("", "whatsweb-crypto-test-*")
+	tempDir, err := os.MkdirTemp("", "parley-crypto-test-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}

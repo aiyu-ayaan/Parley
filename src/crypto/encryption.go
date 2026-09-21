@@ -41,7 +41,11 @@ func NewEncryptionService() (*EncryptionService, error) {
 	if err != nil {
 		return nil, err
 	}
-	dataDir := filepath.Join(homeDir, ".whatsweb")
+	dataDir := filepath.Join(homeDir, ".parley")
+	// The app used to be called Whatsweb: carry its profiles and logins over.
+	if _, err := os.Stat(dataDir); os.IsNotExist(err) {
+		_ = os.Rename(filepath.Join(homeDir, ".whatsweb"), dataDir)
+	}
 	return NewEncryptionServiceWithDir(dataDir)
 }
 

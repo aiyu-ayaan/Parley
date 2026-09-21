@@ -10,8 +10,8 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 
-	"whatsweb/src/backend"
-	"whatsweb/src/crypto"
+	"parley/src/backend"
+	"parley/src/crypto"
 )
 
 //go:embed all:frontend/dist
@@ -35,19 +35,19 @@ func main() {
 
 	// Create application with options
 	err = wails.Run(&options.App{
-		Title:  "Whatsweb",
+		Title:  "Parley",
 		Width:  1024,
 		Height: 768,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
 		BackgroundColour: &options.RGBA{R: 17, G: 21, B: 24, A: 255},
-		// Closing the dashboard only hides it; Whatsweb keeps supervising sessions
+		// Closing the dashboard only hides it; Parley keeps supervising sessions
 		// and delivering notifications. Quit from the dashboard to exit.
 		HideWindowOnClose: true,
 		StartHidden:       slices.Contains(os.Args[1:], "--hidden"),
 		SingleInstanceLock: &options.SingleInstanceLock{
-			UniqueId:               "com.whatsweb.app",
+			UniqueId:               "com.parley.app",
 			OnSecondInstanceLaunch: func(options.SecondInstanceData) { backendApp.ShowWindow() },
 		},
 		OnStartup:  backendApp.Startup,
