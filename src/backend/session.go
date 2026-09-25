@@ -3,9 +3,11 @@ package backend
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"os"
@@ -93,6 +95,16 @@ const notifyHook = `(() => {
       d = typeof fn !== 'function' ? fn : function (n, deps, f, fl) { return fn.call(this, n, deps, n === 'WAWebNotificationTone' && typeof f === 'function' ? quiet(f) : f, fl); };
     }});
   }
+  // The window is titled after the account ("(2) Parley · Work"), not "WhatsApp".
+  // WhatsApp edits <title> directly, so watch <head> (small) and rename after each change.
+  if (window === top) addEventListener('DOMContentLoaded', () => {
+    const fix = () => {
+      const t = document.title, n = window.__parleyName || 'Parley';
+      if (!t.includes(n)) document.title = /WhatsApp( Web)?/.test(t) ? t.replace(/WhatsApp( Web)?/, n) : n;
+    };
+    fix();
+    new MutationObserver(fix).observe(document.head, {childList: true, subtree: true, characterData: true});
+  });
   // Closing the window runs beforeunload; Parley answers the dialog, cancelling a
   // close (and hiding the window instead) but letting real navigations through.
   if (window === top) addEventListener('beforeunload', (e) => { if (!window.__parleyLeave) { e.preventDefault(); e.returnValue = ''; } });
@@ -189,6 +201,7 @@ func (a *App) launch(id string, s *session) (*exec.Cmd, error) {
 	}
 
 	evictStale(dir)
+	a.writeLauncher(id)
 
 	chrome, err := findChrome()
 	if err != nil {
@@ -210,6 +223,17 @@ func (a *App) launch(id string, s *session) (*exec.Cmd, error) {
 		"--no-startup-window",
 		"--class=" + windowClass(id),
 		"--window-size=1100,800",
+		// Background pages must process messages as they arrive, or WhatsApp notifies
+		// late, after the chat was already read on the phone.
+		"--disable-background-timer-throttling",
+		"--disable-renderer-backgrounding",
+		"--disable-backgrounding-occluded-windows",
+		"--disable-features=IntensiveWakeUpThrottling",
+	}
+	if os.Getenv("DISPLAY") != "" {
+		// Native Wayland windows can't be raised or unmapped (xdotool can't see them)
+		// and don't carry --class, so the dock can't match their launcher.
+		args = append(args, "--ozone-platform=x11")
 	}
 
 	inR, inW, err := os.Pipe()
@@ -405,6 +429,7 @@ func (a *App) adoptPage(id string, c *cdp, sid, target, kind string) {
 			{"Page.enable", nil},
 			{"Page.addScriptToEvaluateOnNewDocument", map[string]any{"source": notifyHook}},
 			{"Page.addScriptToEvaluateOnNewDocument", map[string]any{"source": "window.__parleyHidden = true"}},
+			{"Page.addScriptToEvaluateOnNewDocument", map[string]any{"source": "window.__parleyName = " + jsString(launcherName(prof))}},
 		} {
 			if err := c.call(sid, st.method, st.params, nil); err != nil {
 				return err
@@ -464,6 +489,62 @@ func (a *App) pageGone(id string, c *cdp, target string) {
 }
 
 func windowClass(id string) string { return "parley-" + id }
+
+// AppIcon is Parley's PNG logo; account icons are it with the account's initial.
+var AppIcon []byte
+
+func launcherName(p *Profile) string { return "Parley · " + p.Name }
+
+func launcherPath(id string) string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".local", "share", "applications", windowClass(id)+".desktop")
+}
+
+// writeLauncher writes a hidden desktop entry matching the account window's class, so
+// the dock shows it as "Parley · <name>" with the Parley logo badged with its initial.
+func (a *App) writeLauncher(id string) {
+	a.mu.RLock()
+	p := a.profiles[id]
+	a.mu.RUnlock()
+	if p == nil {
+		return
+	}
+	letter := "?"
+	if r := []rune(strings.TrimSpace(p.Name)); len(r) > 0 {
+		letter = strings.ToUpper(string(r[0]))
+	}
+	icon := filepath.Join(a.sessionDir(id), "icon.svg")
+	svg := fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="256" height="256" viewBox="0 0 256 256">
+<image width="256" height="256" xlink:href="data:image/png;base64,%s"/>
+<circle cx="188" cy="188" r="62" fill="%s" stroke="#111b21" stroke-width="8"/>
+<text x="188" y="214" text-anchor="middle" font-family="sans-serif" font-weight="bold" font-size="76" fill="#fff">%s</text>
+</svg>`, base64.StdEncoding.EncodeToString(AppIcon), accountColor(id), html.EscapeString(letter))
+	exe, _ := os.Executable()
+	desktop := fmt.Sprintf("[Desktop Entry]\nType=Application\nName=%s\nExec=%s\nIcon=%s\nStartupWMClass=%s\nNoDisplay=true\n",
+		strings.ReplaceAll(launcherName(p), "\n", " "), exe, icon, windowClass(id))
+	_ = os.MkdirAll(filepath.Dir(launcherPath(id)), 0755)
+	if err := os.WriteFile(icon, []byte(svg), 0600); err != nil {
+		log.Printf("session %s: icon: %v", id, err)
+	}
+	if err := os.WriteFile(launcherPath(id), []byte(desktop), 0644); err != nil {
+		log.Printf("session %s: launcher: %v", id, err)
+	}
+}
+
+// accountColor matches the dashboard's colorFor, so the badge matches the rail orb.
+func accountColor(id string) string {
+	colors := []string{"#00a884", "#53bdeb", "#a970ff", "#f7a541", "#e26ab6", "#06cf9c", "#ff7a6b", "#6b8afd"}
+	var h int32
+	for _, c := range id {
+		h = h*31 + int32(c)
+	}
+	return colors[max(int64(h), -int64(h))%int64(len(colors))]
+}
+
+func jsString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
 
 // onEvent handles DevTools events for one Chrome launch. It runs on the pipe reader, so
 // anything that makes a DevTools call goes to its own goroutine.
@@ -561,6 +642,13 @@ func (a *App) setVisible(id string, visible bool) error {
 		_ = p.c.call("", "Target.activateTarget", map[string]any{"targetId": p.target}, nil)
 		x11Window(id, "windowactivate")
 	default:
+		// Close the open chat (Escape twice: a menu or panel may take the first), so
+		// messages arriving in it while hidden are not marked read.
+		for range 2 {
+			for _, t := range []string{"rawKeyDown", "keyUp"} {
+				_ = p.c.call(p.session, "Input.dispatchKeyEvent", map[string]any{"type": t, "key": "Escape", "code": "Escape", "windowsVirtualKeyCode": 27}, nil)
+			}
+		}
 		if err := bounds(map[string]any{"windowState": "minimized"}); err != nil {
 			return err
 		}

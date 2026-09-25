@@ -17,7 +17,7 @@ A lightweight Linux desktop application for WhatsApp Web with multi-account supp
 - Go 1.21 or later
 - A Chromium-based browser (`google-chrome`, `chromium`, `brave-browser` or `microsoft-edge`)
 - `notify-send` (package `libnotify-bin` / `libnotify`)
-- Optional: `xdotool` (X11) so hidden accounts leave the taskbar
+- Optional: `xdotool` so **Focus window** raises the window and hidden accounts leave the taskbar
 - Wails v2 CLI (`go install github.com/wailsapp/wails/v2/cmd/wails@latest`)
 - **WebView2 dependencies** (Linux: webkit2gtk-4.1)
 
@@ -119,10 +119,16 @@ Each account is a Chrome process with its own data dir (`~/.parley/sessions/<id>
 
 - One Chrome per account, started with `--no-startup-window` and driven over a private DevTools pipe
   (`--remote-debugging-pipe`, no TCP port).
-- **Background start** (login, Start): WhatsApp loads in a hidden, windowless tab, so nothing ever appears on screen.
+- Accounts don't start with Parley; each starts when you open it (or **Start in background**, which loads WhatsApp
+  in a hidden, windowless tab).
+- Chrome runs through XWayland (`--ozone-platform=x11`) so `xdotool` can raise and hide its windows, and with
+  background throttling off so notifications arrive on time.
+- Each account gets a hidden desktop entry (`~/.local/share/applications/parley-<id>.desktop`) matching its window
+  class, so the dock shows "Parley · <name>" with the logo badged with its initial.
 - **First Open**: WhatsApp moves into a bare `--app` window (one page load in the already running Chrome).
 - **Hide**: the window is minimised and, on X11 with `xdotool`, unmapped so it leaves the taskbar. The page stays
-  loaded, so **Open** shows it instantly. The page reports itself hidden, so chats are not marked as read.
+  loaded, so **Open** shows it instantly. Hiding closes the open chat (Escape) and the page reports itself hidden,
+  so nothing is marked as read.
 - **Window closed (X)**: a `beforeunload` guard lets Parley cancel the close over DevTools and hide the window instead,
   so closing is the same as Send to background. Real navigations (reloads, logout) are let through.
   If Chrome exits anyway (crash), Parley relaunches it hidden on the same data dir, so the login is kept.

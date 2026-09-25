@@ -31,7 +31,6 @@ type App struct {
 	activeProfile     string
 	sessions          map[string]*session
 	shuttingDown      bool
-	startOnce         sync.Once
 	procMu            sync.Mutex
 	mu                sync.RWMutex
 }
@@ -59,14 +58,7 @@ func (a *App) Startup(ctx context.Context) {
 
 // DomReady is called after the frontend DOM is ready
 func (a *App) DomReady(ctx context.Context) {
-	// Sessions start here, not in Startup: Wails runs Startup concurrently with the
-	// single-instance check, so a second launch would briefly start (and fight over)
-	// every session before exiting. DomReady is never reached by a second instance.
-	a.startOnce.Do(func() {
-		for _, p := range a.GetProfiles() {
-			a.startSession(p.ID, false)
-		}
-	})
+	// Accounts don't start with Parley: each one starts when the user opens it.
 	// Emit profiles to frontend
 	a.emitProfiles()
 }
@@ -204,6 +196,7 @@ func (a *App) DeleteProfile(id string) error {
 	// Give the supervisor a moment to see the stop before wiping its data.
 	time.Sleep(500 * time.Millisecond)
 	_ = os.RemoveAll(a.sessionDir(id))
+	_ = os.Remove(launcherPath(id))
 
 	a.emitProfiles()
 	return nil
@@ -218,6 +211,9 @@ func (a *App) UpdateProfile(profile *Profile) error {
 	}
 	a.profiles[profile.ID] = profile
 	a.mu.Unlock()
+	if a.IsProfileRunning(profile.ID) {
+		a.writeLauncher(profile.ID) // a stopped account's is rewritten when it starts
+	}
 
 	encrypted, err := a.encryptionService.EncryptJSON(profile)
 	if err != nil {

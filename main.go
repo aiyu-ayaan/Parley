@@ -34,6 +34,7 @@ func main() {
 		log.Fatalf("Failed to initialize encryption service: %v", err)
 	}
 
+	backend.AppIcon = icon
 	// Create backend app instance
 	backendApp := backend.NewApp(encryptionService)
 	mainApp := &App{App: backendApp}

@@ -68,9 +68,10 @@ func TestLiveWindow(t *testing.T) {
 	a, cleanup := createTestApp(t)
 	defer cleanup()
 	p, _ := a.CreateProfile("live")
+	defer os.Remove(launcherPath(p.ID))
 	// A real http page: Chrome won't let a page reload itself to a data: URL.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("<title>live</title>hello"))
+		w.Write([]byte("<title>WhatsApp</title>hello"))
 	}))
 	defer srv.Close()
 	p.URL = srv.URL
@@ -116,12 +117,21 @@ func TestLiveWindow(t *testing.T) {
 		t.Errorf("window role %q, want a bare app window (pop-up)", r)
 	}
 
-	a.HideProfileWindow(p.ID)
-	time.Sleep(500 * time.Millisecond)
-	t.Logf("hidden: %s, mapped=%d", vis(t, a, p.ID), mapped(p.ID))
 	a.procMu.Lock()
 	pg := a.sessions[p.ID].page
 	a.procMu.Unlock()
+	var r struct{ Result struct{ Value any } }
+	pg.c.call(pg.session, "Runtime.evaluate", map[string]any{"expression": "window.__esc = 0; addEventListener('keydown', (e) => e.key === 'Escape' && window.__esc++); document.title"}, &r)
+	if r.Result.Value != "Parley · live" {
+		t.Errorf("title %v, want Parley · live", r.Result.Value)
+	}
+	a.HideProfileWindow(p.ID)
+	time.Sleep(500 * time.Millisecond)
+	t.Logf("hidden: %s, mapped=%d", vis(t, a, p.ID), mapped(p.ID))
+	pg.c.call(pg.session, "Runtime.evaluate", map[string]any{"expression": "window.__esc"}, &r)
+	if r.Result.Value != float64(2) {
+		t.Errorf("hide sent %v Escapes to close the open chat, want 2", r.Result.Value)
+	}
 	pg.c.call(pg.session, "Page.reload", nil, nil)
 	time.Sleep(time.Second)
 	t.Logf("hidden after reload: %s", vis(t, a, p.ID))
