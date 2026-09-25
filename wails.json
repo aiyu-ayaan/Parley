@@ -10,7 +10,7 @@
   "info": {
     "companyName": "Parley",
     "productName": "Parley",
-    "productVersion": "0.0.1-alpha.1",
+    "productVersion": "0.0.1-alpha.2",
     "copyright": "Copyright © 2024 aiyu. All rights reserved."
   },
   "assetsdir": "frontend/dist"
