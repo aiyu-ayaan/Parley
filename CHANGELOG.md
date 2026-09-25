@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.0.1-alpha.2](https://github.com/aiyu-ayaan/Parley/releases/tag/v0.0.1-alpha.2) (2026-09-25)
+
+### Features
+
+- Add video file for enhanced user experience
+- Add one-line install script with stable, beta, alpha fallback
+- Add initial settings configuration with enabled plugins
+
+### Bug fixes
+
+- Start accounts on open, fix focus on wayland, close chat on hide
+- Use a unique icon name so themes can't override the Parley logo
+- Only open the release PR when the pushed commits carry a marker
+
+### Other changes
+
+- Alpha release is done
+- Create LICENSE
+
 ## [0.0.1-alpha.1](https://github.com/aiyu-ayaan/Parley/releases/tag/v0.0.1-alpha.1) (2026-09-21)
 
 ### Features
